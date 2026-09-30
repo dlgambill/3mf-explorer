@@ -1,0 +1,36 @@
+node_modules/
+
+# Runtime data - created next to the app (or next to the executable) on first run
+config.json
+library.db
+library.db-wal
+library.db-shm
+library.db.bak-*
+.thumb-cache/
+_quarantine/
+_recycle.txt
+
+# Scanner / server logs
+_scan.log
+_scan.err
+_server.log
+_server.err
+_scan-errors.json
+_scanargs.txt
+
+# Build output
+build/
+dist/
+
+# Local-only session notes and personal one-off tooling (kept on disk, never published)
+CLAUDE.md
+MISTAKES.md
+downloads_review_skip.json
+move_manual_review.py
+scripts/reorg-library.mjs
+reorg/
+_*.ps1
+_*.mjs
+_*.txt
+_scan*
+_server*

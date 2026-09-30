@@ -1,0 +1,252 @@
+/* 3MF Explorer - deliberate token set, not framework defaults.
+   Workshop tool: dense, dark-first, one warm accent, tight radii. */
+:root {
+  --bg:#14161a; --panel:#1b1e24; --panel-2:#20242b; --line:#2b313b;
+  --text:#dfe3ea; --muted:#8b94a3; --dim:#5c6572;
+  --accent:#f0a136; --accent-soft:rgba(240,161,54,.14);
+  --ok:#4bb87a; --warn:#e0b341; --danger:#e2604f;
+  --r:4px; --row:28px;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+  --sans:system-ui,"Segoe UI",Inter,sans-serif;
+}
+:root[data-theme="light"] {
+  --bg:#f4f5f7; --panel:#fff; --panel-2:#eceef2; --line:#d6dae1;
+  --text:#1a1d23; --muted:#5f6875; --dim:#8b94a3;
+  --accent:#b4670a; --accent-soft:rgba(180,103,10,.10);
+}
+* { box-sizing:border-box; }
+html,body { height:100%; }
+body {
+  margin:0; background:var(--bg); color:var(--text);
+  font:13px/1.45 var(--sans); overflow:hidden;
+}
+button,input,select { font:inherit; color:inherit; }
+
+/* ---- shell ---- */
+#app { display:grid; grid-template-rows:auto 1fr auto; height:100vh; height:100dvh; }
+/* 100dvh = the *visible* height. On a tablet/phone browser, plain 100vh is
+   taller than the screen while the address bar shows, which pushed the
+   footer (and Mark for print) below the fold with no way to scroll to it.
+   On desktop dvh and vh are identical; older browsers keep the vh line. */
+header {
+  display:flex; align-items:center; gap:var(--s3);
+  padding:var(--s2) var(--s3); background:var(--panel);
+  border-bottom:1px solid var(--line);
+}
+.brand { font-weight:650; letter-spacing:.2px; white-space:nowrap; }
+.brand span { color:var(--accent); }
+#q {
+  flex:1; min-width:120px; background:var(--bg); border:1px solid var(--line);
+  border-radius:var(--r); padding:6px 10px; font-family:var(--mono);
+}
+#q:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft); }
+.tabs { display:flex; gap:2px; }
+.tab {
+  background:transparent; border:1px solid transparent; border-radius:var(--r);
+  padding:5px 10px; cursor:pointer; color:var(--muted);
+}
+.tab:hover { color:var(--text); background:var(--panel-2); }
+.tab.on { color:var(--accent); background:var(--accent-soft); border-color:var(--accent); }
+.btn {
+  background:var(--panel-2); border:1px solid var(--line); border-radius:var(--r);
+  padding:5px 10px; cursor:pointer; white-space:nowrap;
+}
+.btn:hover { border-color:var(--accent); color:var(--accent); }
+.btn.primary { background:var(--accent); border-color:var(--accent); color:#14161a; font-weight:600; }
+.btn.primary:hover { filter:brightness(1.08); color:#14161a; }
+.btn.danger:hover { border-color:var(--danger); color:var(--danger); }
+.btn[disabled] { opacity:.4; cursor:default; }
+.stat { color:var(--muted); font-family:var(--mono); font-size:12px; white-space:nowrap; }
+
+/* ---- body: filters | table | detail ---- */
+main { display:grid; grid-template-columns:200px 1fr 300px; min-height:0; }
+main.no-detail { grid-template-columns:200px 1fr; }
+aside {
+  background:var(--panel); border-right:1px solid var(--line);
+  overflow-y:auto; padding:var(--s3);
+}
+aside h3 {
+  margin:var(--s4) 0 var(--s2); font-size:10.5px; text-transform:uppercase;
+  letter-spacing:.9px; color:var(--dim); font-weight:600;
+}
+aside h3:first-child { margin-top:0; }
+.f {
+  display:flex; align-items:center; gap:6px; padding:3px 6px; border-radius:var(--r);
+  cursor:pointer; color:var(--muted); font-size:12px;
+}
+.f:hover { background:var(--panel-2); color:var(--text); }
+.f.on { background:var(--accent-soft); color:var(--accent); }
+.f .n { margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--dim); }
+
+/* ---- table ---- */
+#tablewrap { overflow:auto; position:relative; min-width:0; }
+table { border-collapse:separate; border-spacing:0; table-layout:fixed; }
+thead th {
+  position:sticky; top:0; z-index:2; background:var(--panel);
+  border-bottom:1px solid var(--line); text-align:left; font-weight:600;
+  font-size:11px; letter-spacing:.4px; color:var(--muted); text-transform:uppercase;
+  padding:6px var(--s2); cursor:pointer; user-select:none; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
+}
+/* drag handle sits in the header's right edge */
+th .rz {
+  position:absolute; top:0; right:0; width:7px; height:100%;
+  cursor:col-resize; z-index:3;
+}
+th .rz:hover { background:var(--accent); opacity:.7; }
+thead th:hover { color:var(--accent); }
+thead th .ar { color:var(--accent); }
+#spacer td { padding:0; border:0; }
+tbody tr { height:var(--row); }
+tbody td {
+  padding:0 var(--s2); border-bottom:1px solid var(--line);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+/* editable cells get a quiet affordance - a dotted underline on hover */
+tbody td.editable:hover {
+  box-shadow:inset 0 -1px 0 var(--accent);
+  cursor:text;
+}
+tbody td.editable.empty-cell::after {
+  content:'\2014'; color:var(--dim);
+}
+td.cls span.chip {
+  display:inline-block; padding:0 6px; margin-right:4px; border-radius:2px;
+  font-size:11px; line-height:17px; cursor:pointer;
+  background:var(--accent-soft); color:var(--accent); border:1px solid var(--accent);
+}
+td.cls span.chip:hover { background:var(--accent); color:#14161a; }
+tbody tr:hover td { background:var(--panel-2); }
+tbody tr.sel td { background:var(--accent-soft); }
+tbody tr.sel td:first-child { box-shadow:inset 2px 0 0 var(--accent); }
+td.num, td.mono { font-family:var(--mono); font-size:12px; }
+td.num { text-align:right; }
+td.muted { color:var(--muted); }
+.pill {
+  display:inline-block; padding:0 6px; border-radius:2px; font-size:10.5px;
+  background:var(--panel-2); color:var(--muted); border:1px solid var(--line);
+  font-family:var(--mono);
+}
+.pill.dupe { color:var(--warn); border-color:var(--warn); }
+.pill.geo { color:var(--accent); border-color:var(--accent); }
+
+/* ---- detail panel ---- */
+#detail {
+  background:var(--panel); border-left:1px solid var(--line);
+  overflow-y:auto; padding:var(--s3);
+}
+#detail img.thumb {
+  width:100%; border-radius:var(--r); border:1px solid var(--line);
+  background:var(--bg); display:block; margin-bottom:var(--s3);
+}
+#detail .t { font-weight:650; margin-bottom:2px; word-break:break-word; }
+#detail .sub { color:var(--muted); font-size:12px; margin-bottom:var(--s3); }
+dl.kv { display:grid; grid-template-columns:auto 1fr; gap:3px var(--s2); margin:0 0 var(--s3); }
+dl.kv dt { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.4px; }
+dl.kv dd { margin:0; font-family:var(--mono); font-size:12px; word-break:break-all; }
+.tagrow { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:var(--s2); }
+.tag {
+  background:var(--accent-soft); color:var(--accent); border:1px solid var(--accent);
+  border-radius:2px; padding:0 5px; font-size:11px; cursor:pointer;
+}
+.tag:hover { text-decoration:line-through; }
+
+/* ---- footer / selection bar ---- */
+footer {
+  display:flex; align-items:center; gap:var(--s2); padding:var(--s2) var(--s3);
+  background:var(--panel); border-top:1px solid var(--line); flex-wrap:wrap;
+}
+footer .actions { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); margin-left:auto; }
+footer input[type=text] {
+  background:var(--bg); border:1px solid var(--line); border-radius:var(--r);
+  padding:5px 8px; font-family:var(--mono); min-width:220px;
+}
+footer input[type=text]:focus { outline:none; border-color:var(--accent); }
+
+/* ---- dupes / batches views ---- */
+#panel { overflow:auto; padding:var(--s4); }
+.grp {
+  border:1px solid var(--line); border-radius:var(--r);
+  margin-bottom:var(--s3); background:var(--panel);
+}
+.grp > .hd {
+  display:flex; align-items:center; gap:var(--s2); padding:var(--s2) var(--s3);
+  border-bottom:1px solid var(--line);
+}
+.grp .files { padding:var(--s2) var(--s3); }
+.grp .fl {
+  display:flex; align-items:center; gap:var(--s2); padding:3px 0;
+  font-family:var(--mono); font-size:12px; color:var(--muted);
+}
+.grp .fl .keep { color:var(--ok); }
+.grp .fl .p { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+.empty { color:var(--muted); text-align:center; padding:48px 0; }
+.hidden { display:none !important; }
+
+/* rename preview */
+.rp { font-family:var(--mono); font-size:12px; }
+.rp .from { color:var(--muted); }
+.rp .to { color:var(--ok); }
+.rp .bad { color:var(--danger); }
+.rp .same { color:var(--dim); }
+.rp div { padding:2px 0; border-bottom:1px solid var(--line); }
+
+/* ---- right-click menu ---- */
+#menu {
+  position:fixed; z-index:50; min-width:200px; padding:4px;
+  background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+  box-shadow:0 8px 28px rgba(0,0,0,.45);
+}
+#menu button {
+  display:block; width:100%; text-align:left; background:none; border:0;
+  padding:6px 10px; border-radius:2px; cursor:pointer; white-space:nowrap;
+}
+#menu button:hover { background:var(--accent-soft); color:var(--accent); }
+#menu button.danger:hover { background:rgba(226,96,79,.14); color:var(--danger); }
+#menu button[disabled] { opacity:.35; cursor:default; }
+#menu button[disabled]:hover { background:none; color:inherit; }
+#menu .sep { height:1px; background:var(--line); margin:4px 2px; }
+#menu .lbl {
+  padding:4px 10px 2px; font-size:10.5px; text-transform:uppercase;
+  letter-spacing:.7px; color:var(--dim);
+}
+
+/* inline rename box, sits over the name cell */
+input.renamer {
+  width:100%; background:var(--bg); color:var(--text);
+  border:1px solid var(--accent); border-radius:2px;
+  padding:1px 4px; font:inherit; font-family:var(--mono);
+}
+input.renamer:focus { outline:none; }
+
+/* toast */
+#toast {
+  position:fixed; right:16px; bottom:56px; z-index:60;
+  background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent);
+  border-radius:var(--r); padding:9px 14px; max-width:420px;
+  box-shadow:0 8px 28px rgba(0,0,0,.4);
+}
+#toast.bad { border-left-color:var(--danger); }
+
+/* ---- keyboard cell cursor ---- */
+tbody td.cur {
+  outline:2px solid var(--accent);
+  outline-offset:-2px;
+  background:var(--accent-soft);
+  position:relative; z-index:1;
+}
+tbody tr.sel td.cur { background:var(--accent-soft); }
+/* the cursor should read as the focus even when the row is not selected */
+#tablewrap:focus { outline:none; }
+#tablewrap:focus-visible { outline:none; }
+
+/* ---- touch / tablet ----
+   Only applies when the primary pointer is a finger, so the desktop layout
+   is untouched. Puts the selection count and "Mark for print" first in the
+   footer (it wraps to several rows on a tablet, and the button used to land
+   near the end) and gives the button a finger-sized target. */
+@media (pointer: coarse) {
+  footer #selstat   { order:-2; }
+  footer #markPrint { order:-1; min-height:44px; padding:10px 20px; font-size:15px; }
+}

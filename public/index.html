@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3MF Explorer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <div class="brand">3MF <span>Explorer</span></div>
+    <input id="q" type="text" placeholder="Search name, title, designer, path, tag&hellip;  (/ to focus)" autocomplete="off" spellcheck="false">
+    <div class="tabs">
+      <button class="tab on" data-view="files">Files</button>
+      <button class="tab" data-view="dupes">Duplicates</button>
+      <button class="tab" data-view="history">History</button>
+    </div>
+    <span class="stat" id="stat">&hellip;</span>
+    <button class="btn" id="rescan">Rescan</button>
+    <button class="btn" id="theme" title="Light / dark">&#9681;</button>
+  </header>
+
+  <main id="main">
+    <aside id="filters"></aside>
+
+    <div id="tablewrap">
+      <table id="tbl">
+        <colgroup id="cg"></colgroup>
+        <thead><tr id="hrow"></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <div id="panel" class="hidden"></div>
+    </div>
+
+    <div id="detail"><div class="empty">Nothing selected</div></div>
+  </main>
+
+  <footer>
+    <span class="stat" id="selstat">0 selected</span>
+    <input type="text" id="pattern" value="{designer} - {title}" title="Rename pattern">
+    <button class="btn" id="preview">Preview rename</button>
+    <input type="text" id="cleanwords" value="cute, articulated, flexi" size="20" title="Words to strip from the Title field, comma-separated">
+    <button class="btn" id="previewclean" title="Preview stripping the designer name, these words, and a trailing catalog number from the Title field. Doesn't touch files.">Clean titles</button>
+    <button class="btn" id="applytitles" title="Rename files to their Title. Designer and first tag are added only to break a clash.">Titles &rarr; filenames</button>
+    <button class="btn primary hidden" id="applyren">Apply</button>
+    <button class="btn primary hidden" id="applyclean">Apply</button>
+    <input type="text" id="tagin" placeholder="add tag, Enter" style="min-width:140px">
+    <button class="btn primary" id="markPrint" title="Tell the U1 Print Hub these are ready to print">Mark for print</button>
+    <!-- file / library actions travel as one group, so when the footer wraps
+         they move to the next line together instead of stranding one button -->
+    <div class="actions">
+      <button class="btn" id="exportXlsx" title="Export the library to Excel">Export to Excel</button>
+      <button class="btn" id="importXlsx" title="Apply an edited Excel file back">Import from Excel</button>
+      <input type="file" id="importXlsxFile" accept=".xlsx" style="display:none">
+      <button class="btn" id="reveal">Show in folder</button>
+      <button class="btn danger" id="quarantine">Move to quarantine</button>
+    </div>
+  </footer>
+
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
