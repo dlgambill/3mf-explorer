@@ -9,6 +9,8 @@ and a round trip through Excel for bulk edits.
 It runs on your own computer and opens in your browser. No account, no cloud,
 nothing uploaded anywhere.
 
+![3MF Explorer: the library as one searchable table, with the details of the model you pick](docs/screenshot.png)
+
 ## What it does
 
 - **Indexes your library.** Every `.3mf`, `.stl` and `.obj` under the folders
@@ -34,7 +36,9 @@ nothing uploaded anywhere.
 
 ## Download and run
 
-Grab the file for your system from the Releases page:
+Grab the file for your system from the
+[U1 Print Hub Releases page](https://github.com/dlgambill/u1hub/releases/latest) -
+3MF Explorer ships alongside the Hub there:
 
 | System | File |
 |---|---|
