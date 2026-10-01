@@ -160,7 +160,7 @@ function saveSettings(body) {
   const raw = Array.isArray(body?.roots) ? body.roots : [];
   const roots = [];
   for (const r of raw.map(x => String(x).trim()).filter(Boolean)) {
-    if (!isAbs(r)) throw new Error(`"${r}" isn't a full path - use something like X:\\_MMF`);
+    if (!isAbs(r)) throw new Error(`"${r}" isn't a full path - use something like D:\\3D Models`);
     if (!isDir(r)) throw new Error(`Can't find the folder "${r}"`);
     const abs = path.resolve(r);
     if (!roots.some(x => rootKey(x) === rootKey(abs))) roots.push(abs);

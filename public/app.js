@@ -510,7 +510,7 @@ async function renderSettings() {
   roots.rows = Math.max(3, s.roots.length + 1);
   roots.spellcheck = false;
   roots.value = s.roots.join('\n');
-  roots.placeholder = 'X:\\_MMF';
+  roots.placeholder = 'D:\\3D Models';
 
   const types = el('div', 'types');
   const typeBoxes = (s.allFileTypes || ['.3mf', '.stl', '.obj']).map(ext => {
