@@ -1,6 +1,6 @@
 {
   "name": "3mf-explorer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A fast, searchable local index of your 3D model library (3MF, STL, OBJ) with plate thumbnails, duplicate detection, tags and batch renaming.",
   "license": "MIT",
   "private": true,
@@ -15,7 +15,8 @@
     "start": "node server.mjs",
     "scan": "node scan-cli.mjs",
     "status": "node status.mjs",
-    "build": "node scripts/build.mjs"
+    "build": "node scripts/build.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "exceljs": "^4.4.0"
