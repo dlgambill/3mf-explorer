@@ -2,6 +2,7 @@
   "_help": "Copied to config.json on first run. Set the folders you want indexed in the app's Settings tab, or put them in roots here (use \\\\ or / in Windows paths) and restart. Leave quarantine empty to use a _quarantine folder next to the app. See README.md.",
   "port": 7333,
   "roots": [],
+  "fileTypes": [".3mf", ".stl", ".obj"],
   "quarantine": "",
   "concurrency": 0,
   "geometryMaxMB": 0,

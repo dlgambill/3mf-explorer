@@ -7,7 +7,7 @@ import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openDb, getMeta, setMeta } from './lib/db.mjs';
-import { scan, longPath } from './lib/scan.mjs';
+import { scan, longPath, EXTS, normExts } from './lib/scan.mjs';
 import * as ren from './lib/rename.mjs';
 import * as ct from './lib/cleanTitle.mjs';
 import * as xl from './lib/xlsx.mjs';
@@ -115,26 +115,29 @@ function dupeGroups() {
   return groups;
 }
 
-// ---- library folders ----------------------------------------------------
-// The index only ever holds files inside the configured library folders
-// (cfg.roots). This drops rows outside them and re-points root/rel on the
-// rest at the folder that now holds them, so changing the folders (Settings,
-// or a hand edit of config.json) never leaves stale rows behind. Only index
-// rows change - nothing on disk is touched, and titles, designers and tags
-// survive because they are keyed by sha256, not by path.
+// ---- library folders and file types ------------------------------------
+// The index only ever holds files of the chosen types (cfg.fileTypes)
+// inside the configured library folders (cfg.roots). This drops every other
+// row and re-points root/rel on the rest at the folder that now holds them,
+// so changing either setting (Settings tab, or a hand edit of config.json)
+// never leaves stale rows behind. Only index rows change - nothing on disk
+// is touched, and titles, designers and tags survive because they are keyed
+// by sha256, not by path.
 const rootKey = r => { const p = path.resolve(r).toLowerCase(); return p.endsWith(path.sep) ? p : p + path.sep; };
 
-function reconcileRoots(roots = cfg.roots) {
+function reconcileRoots(roots = cfg.roots, types = normExts(cfg.fileTypes)) {
   if (!roots.length) return { removed: 0, repointed: 0 }; // never empty the index on a blank config
   const rs = roots.map(r => ({ r: path.resolve(r), k: rootKey(r) }))
     .sort((a, b) => b.k.length - a.k.length); // innermost folder wins
-  const rows = db.prepare('SELECT id, path, root, rel FROM files').all();
+  const rows = db.prepare('SELECT id, path, root, rel, ext FROM files').all();
   const del = db.prepare('DELETE FROM files WHERE id=?');
   const upd = db.prepare('UPDATE files SET root=?, rel=? WHERE id=?');
   let removed = 0, repointed = 0;
   db.exec('BEGIN');
   try {
     for (const row of rows) {
+      const ext = (row.ext || path.extname(row.path)).toLowerCase();
+      if (!types.has(ext)) { del.run(row.id); removed++; continue; }
       const lp = path.resolve(row.path).toLowerCase();
       const hit = rs.find(x => lp.startsWith(x.k));
       if (!hit) { del.run(row.id); removed++; continue; }
@@ -179,8 +182,20 @@ function saveSettings(body) {
       throw new Error(`The quarantine folder can't be inside a library folder unless it's named _quarantine.`);
   }
 
+  // File types: a subset of what the parsers read. Left out of the request
+  // (an older page) means keep the current choice.
+  let fileTypes = [...normExts(cfg.fileTypes)];
+  if (Array.isArray(body?.fileTypes)) {
+    const asked = body.fileTypes.map(x => String(x).trim().toLowerCase().replace(/^\.?/, '.'));
+    const bad = asked.filter(x => !EXTS.has(x));
+    if (bad.length) throw new Error(`Unknown file type ${bad.join(', ')} - choose from ${[...EXTS].join(', ')}`);
+    if (!asked.length) throw new Error('Pick at least one file type.');
+    fileTypes = [...EXTS].filter(x => asked.includes(x)); // canonical order
+  }
+
   const onDisk = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
   onDisk.roots = roots;
+  onDisk.fileTypes = fileTypes;
   onDisk.quarantine = quarantine;
   fs.copyFileSync(CFG_PATH, CFG_PATH + '.bak');
   const tmp = CFG_PATH + '.tmp';
@@ -188,10 +203,11 @@ function saveSettings(body) {
   fs.renameSync(tmp, CFG_PATH);
 
   cfg.roots = roots;
+  cfg.fileTypes = fileTypes;
   cfg.quarantine = quarantine;
-  const r = reconcileRoots(roots);
+  const r = reconcileRoots(roots, new Set(fileTypes));
   startScan();
-  return { ok: true, roots, quarantine, ...r };
+  return { ok: true, roots, fileTypes, quarantine, ...r };
 }
 
 async function startScan() {
@@ -204,6 +220,7 @@ async function startScan() {
     const s = await scan(db, roots, THUMBS, {
       concurrency: cfg.concurrency || 8,
       geometryMaxMB: cfg.geometryMaxMB || 0,
+      exts: cfg.fileTypes,
       onProgress: st => Object.assign(scanState, st),
     });
     Object.assign(scanState, s);
@@ -281,6 +298,7 @@ const routes = {
 
   'GET /api/settings': () => ({
     roots: cfg.roots, quarantine: cfg.quarantine || '',
+    fileTypes: [...normExts(cfg.fileTypes)], allFileTypes: [...EXTS],
     quarantineDefault: path.join(DATA, '_quarantine'),
   }),
   'POST /api/settings': (body) => saveSettings(body),

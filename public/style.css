@@ -194,6 +194,9 @@ footer input[type=text]:focus { outline:none; border-color:var(--accent); }
 }
 .settings textarea:focus, .settings input[type=text]:focus { outline:none; border-color:var(--accent); }
 .settings .row { display:flex; gap:var(--s2); align-items:center; }
+.settings .types { display:flex; flex-wrap:wrap; gap:var(--s4); }
+.settings .types label { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-family:var(--mono); font-size:12px; }
+.settings .types input { accent-color:var(--accent); margin:0; }
 .hidden { display:none !important; }
 
 /* rename preview */

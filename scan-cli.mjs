@@ -19,6 +19,7 @@ let lastLine = 0;
 const s = await scan(db, roots, path.join(HERE, '.thumb-cache'), {
   concurrency: cfg.concurrency || 8,
   geometryMaxMB: cfg.geometryMaxMB || 0,
+  exts: cfg.fileTypes,
   onProgress: st => {
     const now = Date.now();
     if (now - lastLine < 2000) return;

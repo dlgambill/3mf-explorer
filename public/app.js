@@ -512,6 +512,18 @@ async function renderSettings() {
   roots.value = s.roots.join('\n');
   roots.placeholder = 'X:\\_MMF';
 
+  const types = el('div', 'types');
+  const typeBoxes = (s.allFileTypes || ['.3mf', '.stl', '.obj']).map(ext => {
+    const lab = el('label');
+    const cb = el('input');
+    cb.type = 'checkbox';
+    cb.value = ext;
+    cb.checked = (s.fileTypes || []).includes(ext);
+    lab.append(cb, document.createTextNode(ext.slice(1).toUpperCase()));
+    types.append(lab);
+    return cb;
+  });
+
   const quar = el('input');
   quar.type = 'text';
   quar.spellcheck = false;
@@ -522,9 +534,11 @@ async function renderSettings() {
   save.onclick = async () => {
     save.disabled = true;
     try {
-      const r = await api('/api/settings', { roots: roots.value.split(/\r?\n/), quarantine: quar.value });
+      const fileTypes = typeBoxes.filter(cb => cb.checked).map(cb => cb.value);
+      if (!fileTypes.length) return toast('Pick at least one file type.', true);
+      const r = await api('/api/settings', { roots: roots.value.split(/\r?\n/), fileTypes, quarantine: quar.value });
       toast(r.removed
-        ? `Saved - ${r.removed.toLocaleString()} files outside these folders left the list`
+        ? `Saved - ${r.removed.toLocaleString()} files no longer match and left the list`
         : 'Saved');
       setTab('files');
       await load();
@@ -539,6 +553,8 @@ async function renderSettings() {
   wrap.append(
     box('Library folders',
       'One folder per line. Only files inside these folders are indexed.', roots),
+    box('File types',
+      'Only these types are indexed and shown. Turning one off drops those files from the list - nothing on disk changes.', types),
     box('Quarantine folder',
       'Where "Move to quarantine" puts files. Leave blank to use ' + s.quarantineDefault + '.', quar),
     actions);
@@ -679,9 +695,9 @@ async function rescan() {
   $('#rescan').disabled = true;
   const tick = setInterval(async () => {
     const s = await api('/api/scan/status');
-    $('#stat').textContent = s.running
-      ? `scanning ${s.done}/${s.total} · +${s.added} new`
-      : 'finishing…';
+    $('#stat').textContent = !s.running ? 'finishing…'
+      : s.walking || !s.total ? `finding files… ${s.total || ''}`
+      : `scanning ${s.done}/${s.total} · +${s.added} new`;
     if (!s.running) {
       clearInterval(tick);
       $('#rescan').disabled = false;

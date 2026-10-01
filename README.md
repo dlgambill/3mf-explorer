@@ -80,11 +80,13 @@ starts the server and opens the browser for you.
 
 ## Setting it up
 
-Open the **Settings** tab to pick your library folders and the quarantine
-folder. Type one folder per line, hit **Save and rescan**, and you're done -
-no restart needed. Only files inside those folders show up. If you remove a
-folder, its files drop out of the list (nothing on disk is touched, and your
-titles, designers and tags come back if you add the folder again).
+Open the **Settings** tab to pick your library folders, which file types to
+show (3MF, STL, OBJ) and the quarantine folder. Type one folder per line,
+tick the types you want, hit **Save and rescan**, and you're done - no
+restart needed. Only files of those types inside those folders show up. If
+you remove a folder or untick a type, those files drop out of the list
+(nothing on disk is touched, and your titles, designers and tags come back
+if you add them again).
 
 Everything else lives in `config.json`, which Settings also writes to. Edit
 it with any text editor, save, and restart 3MF Explorer.
@@ -93,6 +95,7 @@ it with any text editor, save, and restart 3MF Explorer.
 {
   "port": 7333,
   "roots": ["D:\\3D Models", "D:\\Downloads"],
+  "fileTypes": [".3mf", ".stl", ".obj"],
   "quarantine": "D:\\3D Models\\_quarantine",
   "concurrency": 0,
   "geometryMaxMB": 0,
@@ -105,6 +108,8 @@ it with any text editor, save, and restart 3MF Explorer.
   under them is included, and nothing outside them is. On Windows, write
   backslashes twice (`D:\\Models`) or use forward slashes (`D:/Models`).
   After a hand edit, restart and hit **Rescan**.
+- **`fileTypes`** - which of `.3mf`, `.stl` and `.obj` to index (the Settings
+  tab edits this too). Leave it out to get all three.
 - **`quarantine`** - where "Move to quarantine" puts files. Leave it empty to
   use a `_quarantine` folder next to the program. It works best on the same
   drive as your library, because moving a file across drives is not a
