@@ -481,6 +481,70 @@ async function renderHistory() {
   else renderBatches(titleBs, '/api/titles/clean-undo', 'titles');
 }
 
+// ---- settings view -----------------------------------------------------
+// Which folders get indexed, and where "Move to quarantine" sends files.
+// The server checks the folders exist, saves them to config.json and
+// rescans. Files outside the folders drop out of the list - only the list;
+// nothing on disk is touched, and titles/designers/tags are kept.
+const errText = e => { try { return JSON.parse(e.message).error || e.message; } catch { return e.message; } };
+
+async function renderSettings() {
+  const p = $('#panel');
+  p.innerHTML = '';
+  let s;
+  try { s = await api('/api/settings'); }
+  catch (e) { p.append(el('div', 'empty', 'Could not load settings: ' + errText(e))); return; }
+  if (S.tab !== 'settings') return;
+
+  const box = (title, hint, field) => {
+    const g = el('div', 'grp');
+    const hd = el('div', 'hd');
+    hd.append(el('strong', null, title));
+    const body = el('div', 'body');
+    body.append(el('div', 'hint', hint), field);
+    g.append(hd, body);
+    return g;
+  };
+
+  const roots = el('textarea');
+  roots.rows = Math.max(3, s.roots.length + 1);
+  roots.spellcheck = false;
+  roots.value = s.roots.join('\n');
+  roots.placeholder = 'X:\\_MMF';
+
+  const quar = el('input');
+  quar.type = 'text';
+  quar.spellcheck = false;
+  quar.value = s.quarantine;
+  quar.placeholder = s.quarantineDefault;
+
+  const save = el('button', 'btn primary', 'Save and rescan');
+  save.onclick = async () => {
+    save.disabled = true;
+    try {
+      const r = await api('/api/settings', { roots: roots.value.split(/\r?\n/), quarantine: quar.value });
+      toast(r.removed
+        ? `Saved - ${r.removed.toLocaleString()} files outside these folders left the list`
+        : 'Saved');
+      setTab('files');
+      await load();
+      rescan(); // the server already started it; this just shows progress
+    } catch (e) { toast(errText(e), true); }
+    finally { save.disabled = false; }
+  };
+  const actions = el('div', 'row');
+  actions.append(save);
+
+  const wrap = el('div', 'settings');
+  wrap.append(
+    box('Library folders',
+      'One folder per line. Only files inside these folders are indexed.', roots),
+    box('Quarantine folder',
+      'Where "Move to quarantine" puts files. Leave blank to use ' + s.quarantineDefault + '.', quar),
+    actions);
+  p.append(wrap);
+}
+
 // ---- rename ------------------------------------------------------------
 function showPlan(plan, heading) {
   S.plan = plan;
@@ -668,6 +732,7 @@ function setTab(name) {
   $('#panel').classList.toggle('hidden', showTable);
   if (name === 'dupes') renderDupes();
   if (name === 'history') renderHistory();
+  if (name === 'settings') renderSettings();
   if (name === 'files' && !hasPlan) {
     $('#applyren').classList.add('hidden');
     $('#applyclean').classList.add('hidden');
@@ -796,6 +861,8 @@ function wire() {
   };
 
   addEventListener('keydown', e => {
+    // the Settings fields are free text (paths can use / and want Ctrl+A)
+    if (document.activeElement?.closest?.('.settings')) return;
     if (e.key === '/' && document.activeElement !== $('#q')) { e.preventDefault(); $('#q').focus(); }
     if (e.key === 'Escape') { $('#q').blur(); S.sel.clear(); renderTable(); renderStat(); renderDetail(); }
     if ((e.ctrlKey || e.metaKey) && e.key === 'a' && document.activeElement !== $('#q')) {

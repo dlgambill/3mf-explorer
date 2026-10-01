@@ -115,9 +115,89 @@ function dupeGroups() {
   return groups;
 }
 
+// ---- library folders ----------------------------------------------------
+// The index only ever holds files inside the configured library folders
+// (cfg.roots). This drops rows outside them and re-points root/rel on the
+// rest at the folder that now holds them, so changing the folders (Settings,
+// or a hand edit of config.json) never leaves stale rows behind. Only index
+// rows change - nothing on disk is touched, and titles, designers and tags
+// survive because they are keyed by sha256, not by path.
+const rootKey = r => { const p = path.resolve(r).toLowerCase(); return p.endsWith(path.sep) ? p : p + path.sep; };
+
+function reconcileRoots(roots = cfg.roots) {
+  if (!roots.length) return { removed: 0, repointed: 0 }; // never empty the index on a blank config
+  const rs = roots.map(r => ({ r: path.resolve(r), k: rootKey(r) }))
+    .sort((a, b) => b.k.length - a.k.length); // innermost folder wins
+  const rows = db.prepare('SELECT id, path, root, rel FROM files').all();
+  const del = db.prepare('DELETE FROM files WHERE id=?');
+  const upd = db.prepare('UPDATE files SET root=?, rel=? WHERE id=?');
+  let removed = 0, repointed = 0;
+  db.exec('BEGIN');
+  try {
+    for (const row of rows) {
+      const lp = path.resolve(row.path).toLowerCase();
+      const hit = rs.find(x => lp.startsWith(x.k));
+      if (!hit) { del.run(row.id); removed++; continue; }
+      const rel = path.relative(hit.r, row.path);
+      if (row.root !== hit.r || row.rel !== rel) { upd.run(hit.r, rel, row.id); repointed++; }
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return { removed, repointed };
+}
+
+// Validate, save to config.json, apply live, then rescan. config.json is
+// re-read from disk (so hand-added keys like _note survive), backed up to
+// config.json.bak, and replaced atomically via a temp file + rename.
+function saveSettings(body) {
+  if (scanState.running) throw new Error('A scan is running - try again when it finishes.');
+  const isAbs = p => path.isAbsolute(p) && !/^[\\/](?![\\/])/.test(p); // "\foo" has no drive
+  const isDir = p => { try { return fs.statSync(longPath(p)).isDirectory(); } catch { return false; } };
+
+  const raw = Array.isArray(body?.roots) ? body.roots : [];
+  const roots = [];
+  for (const r of raw.map(x => String(x).trim()).filter(Boolean)) {
+    if (!isAbs(r)) throw new Error(`"${r}" isn't a full path - use something like X:\\_MMF`);
+    if (!isDir(r)) throw new Error(`Can't find the folder "${r}"`);
+    const abs = path.resolve(r);
+    if (!roots.some(x => rootKey(x) === rootKey(abs))) roots.push(abs);
+  }
+  if (!roots.length) throw new Error('Add at least one library folder.');
+  for (const a of roots) for (const b of roots) {
+    if (a !== b && rootKey(a).startsWith(rootKey(b)))
+      throw new Error(`"${a}" is already inside "${b}" - list just one of them.`);
+  }
+
+  let quarantine = String(body?.quarantine ?? '').trim();
+  if (quarantine) {
+    if (!isAbs(quarantine)) throw new Error(`Quarantine "${quarantine}" isn't a full path`);
+    quarantine = path.resolve(quarantine);
+    // The scanner skips folders named _quarantine; any other name inside a
+    // library folder would get indexed right back.
+    const inside = roots.find(r => rootKey(quarantine).startsWith(rootKey(r)));
+    if (inside && path.basename(quarantine).toLowerCase() !== '_quarantine')
+      throw new Error(`The quarantine folder can't be inside a library folder unless it's named _quarantine.`);
+  }
+
+  const onDisk = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
+  onDisk.roots = roots;
+  onDisk.quarantine = quarantine;
+  fs.copyFileSync(CFG_PATH, CFG_PATH + '.bak');
+  const tmp = CFG_PATH + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(onDisk, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmp, CFG_PATH);
+
+  cfg.roots = roots;
+  cfg.quarantine = quarantine;
+  const r = reconcileRoots(roots);
+  startScan();
+  return { ok: true, roots, quarantine, ...r };
+}
+
 async function startScan() {
   if (scanState.running) return;
   const roots = cfg.roots || [];
+  try { reconcileRoots(roots); } catch (e) { console.error('reconcile:', e.message); }
   scanState = { running: true, total: 0, done: 0, added: 0, updated: 0, skipped: 0,
                 failed: 0, removed: 0, startedAt: Date.now(), finishedAt: null };
   try {
@@ -198,6 +278,12 @@ const routes = {
       name: a.name, default: !!a.default, present: fs.existsSync(a.exe),
     })),
   }),
+
+  'GET /api/settings': () => ({
+    roots: cfg.roots, quarantine: cfg.quarantine || '',
+    quarantineDefault: path.join(DATA, '_quarantine'),
+  }),
+  'POST /api/settings': (body) => saveSettings(body),
 
   'GET /api/stats': () => {
     const s = db.prepare(`SELECT COUNT(*) files, COALESCE(SUM(size),0) bytes,
@@ -568,12 +654,19 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// A hand edit of config.json's roots takes effect on restart the same way a
+// Settings save does: rows outside the folders leave the index.
+try {
+  const r = reconcileRoots();
+  if (r.removed) console.log(`  Dropped ${r.removed} index rows outside the library folders.`);
+} catch (e) { console.error('  reconcile failed:', e.message); }
+
 const PORT = cfg.port || 7333;
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`\n  3MF Explorer  ->  http://localhost:${PORT}\n`);
   console.log('  roots:');
   for (const r of cfg.roots) console.log('    ' + r + (fs.existsSync(longPath(r)) ? '' : '   (missing)'));
-  if (!cfg.roots.length) console.log('    (none yet - add your model folders to "roots" in ' + CFG_PATH + ', then restart)');
+  if (!cfg.roots.length) console.log('    (none yet - open Settings in the app, or add your model folders to "roots" in ' + CFG_PATH + ')');
   const n = db.prepare('SELECT COUNT(*) c FROM files').get().c;
   console.log(`\n  ${n} files indexed. ${n ? '' : 'Hit Rescan in the UI to build the index.'}\n`);
 });

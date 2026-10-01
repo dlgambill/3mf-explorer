@@ -1,6 +1,6 @@
 {
   "name": "3mf-explorer",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "A fast, searchable local index of your 3D model library (3MF, STL, OBJ) with plate thumbnails, duplicate detection, tags and batch renaming.",
   "license": "MIT",
   "private": true,

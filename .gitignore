@@ -34,3 +34,5 @@ _*.mjs
 _*.txt
 _scan*
 _server*
+config.json.bak
+config.json.tmp

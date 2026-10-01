@@ -80,8 +80,14 @@ starts the server and opens the browser for you.
 
 ## Setting it up
 
-Everything is set in `config.json`. Edit it with any text editor, save, and
-restart 3MF Explorer. (There is no settings screen yet.)
+Open the **Settings** tab to pick your library folders and the quarantine
+folder. Type one folder per line, hit **Save and rescan**, and you're done -
+no restart needed. Only files inside those folders show up. If you remove a
+folder, its files drop out of the list (nothing on disk is touched, and your
+titles, designers and tags come back if you add the folder again).
+
+Everything else lives in `config.json`, which Settings also writes to. Edit
+it with any text editor, save, and restart 3MF Explorer.
 
 ```json
 {
@@ -95,9 +101,10 @@ restart 3MF Explorer. (There is no settings screen yet.)
 }
 ```
 
-- **`roots`** - the folders to index. Everything under them is included. On
-  Windows, write backslashes twice (`D:\\Models`) or use forward slashes
-  (`D:/Models`). After adding folders, restart and hit **Rescan**.
+- **`roots`** - the folders to index (the Settings tab edits this). Everything
+  under them is included, and nothing outside them is. On Windows, write
+  backslashes twice (`D:\\Models`) or use forward slashes (`D:/Models`).
+  After a hand edit, restart and hit **Rescan**.
 - **`quarantine`** - where "Move to quarantine" puts files. Leave it empty to
   use a `_quarantine` folder next to the program. It works best on the same
   drive as your library, because moving a file across drives is not a
