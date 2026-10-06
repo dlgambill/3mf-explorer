@@ -524,6 +524,12 @@ async function renderSettings() {
     return cb;
   });
 
+  const prot = el('textarea');
+  prot.rows = Math.max(3, (s.protected || []).length + 1);
+  prot.spellcheck = false;
+  prot.value = (s.protected || []).join('\n');
+  prot.placeholder = 'D:\\3D Models\\_templates\ntemplate*.3mf';
+
   const quar = el('input');
   quar.type = 'text';
   quar.spellcheck = false;
@@ -536,7 +542,8 @@ async function renderSettings() {
     try {
       const fileTypes = typeBoxes.filter(cb => cb.checked).map(cb => cb.value);
       if (!fileTypes.length) return toast('Pick at least one file type.', true);
-      const r = await api('/api/settings', { roots: roots.value.split(/\r?\n/), fileTypes, quarantine: quar.value });
+      const r = await api('/api/settings', { roots: roots.value.split(/\r?\n/), fileTypes,
+        protected: prot.value.split(/\r?\n/), quarantine: quar.value });
       toast(r.removed
         ? `Saved - ${r.removed.toLocaleString()} files no longer match and left the list`
         : 'Saved');
@@ -555,6 +562,10 @@ async function renderSettings() {
       'One folder per line. Only files inside these folders are indexed.', roots),
     box('File types',
       'Only these types are indexed and shown. Turning one off drops those files from the list - nothing on disk changes.', types),
+    box('Protected files',
+      'One per line. These are never listed, and this app will never delete, move or rename them - ' +
+      'even if they are duplicates. Use a full folder path to protect everything in it, or a file name ' +
+      '(* works as a wildcard) to protect that name in any folder.', prot),
     box('Quarantine folder',
       'Where "Move to quarantine" puts files. Leave blank to use ' + s.quarantineDefault + '.', quar),
     actions);
@@ -926,7 +937,8 @@ async function recycle(ids) {
   if (!confirm(`Send ${label} to the Recycle Bin?\n\nRecoverable from Windows if you change your mind.`)) return;
   try {
     const r = await api('/api/os/recycle', { ids });
-    toast(`Recycled ${r.recycled} of ${r.asked}`);
+    toast(`Recycled ${r.recycled} of ${r.asked}` +
+      (r.blocked ? ` - ${r.blocked} protected, left alone` : ''), !!r.blocked);
     S.sel.clear();
     await load();
     if (S.tab === 'dupes') renderDupes();

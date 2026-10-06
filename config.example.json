@@ -3,6 +3,7 @@
   "port": 7333,
   "roots": [],
   "fileTypes": [".3mf", ".stl", ".obj"],
+  "protected": [],
   "quarantine": "",
   "concurrency": 0,
   "geometryMaxMB": 0,

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, setMeta } from './lib/db.mjs';
 import { scan } from './lib/scan.mjs';
+import { makeProtector } from './lib/protect.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const cfg = JSON.parse(fs.readFileSync(path.join(HERE, 'config.json'), 'utf8'));
@@ -20,6 +21,7 @@ const s = await scan(db, roots, path.join(HERE, '.thumb-cache'), {
   concurrency: cfg.concurrency || 8,
   geometryMaxMB: cfg.geometryMaxMB || 0,
   exts: cfg.fileTypes,
+  isProtected: makeProtector(cfg.protected),
   onProgress: st => {
     const now = Date.now();
     if (now - lastLine < 2000) return;

@@ -11,6 +11,7 @@ import { scan, longPath, EXTS, normExts } from './lib/scan.mjs';
 import * as ren from './lib/rename.mjs';
 import * as ct from './lib/cleanTitle.mjs';
 import * as xl from './lib/xlsx.mjs';
+import { makeProtector, normProtected } from './lib/protect.mjs';
 
 // HERE is where the app's own files are (public/, recycle.ps1). DATA is where
 // config.json, library.db and .thumb-cache live: next to server.mjs when run
@@ -35,6 +36,17 @@ if (!fs.existsSync(CFG_PATH)) {
 }
 const cfg = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
 cfg.roots = Array.isArray(cfg.roots) ? cfg.roots : [];
+// Rebuilt whenever Settings saves the list. See lib/protect.mjs.
+let isProtected = makeProtector(cfg.protected);
+const PROTECTED_MSG = 'protected in Settings - this app never moves, renames or deletes it';
+
+// Append-only audit trail of everything this app deletes or quarantines,
+// one line per file, so "who deleted this?" is a grep, not forensics.
+const ACTIONS_LOG = path.join(DATA, '_actions-log.txt');
+const logAction = (action, file, extra = '') => {
+  try { fs.appendFileSync(ACTIONS_LOG, `${new Date().toISOString()}\t${action}\t${file}${extra ? '\t' + extra : ''}\n`, 'utf8'); }
+  catch {}
+};
 const THUMBS = path.join(DATA, '.thumb-cache');
 const db = openDb(path.join(DATA, 'library.db'));
 
@@ -137,7 +149,7 @@ function reconcileRoots(roots = cfg.roots, types = normExts(cfg.fileTypes)) {
   try {
     for (const row of rows) {
       const ext = (row.ext || path.extname(row.path)).toLowerCase();
-      if (!types.has(ext)) { del.run(row.id); removed++; continue; }
+      if (!types.has(ext) || isProtected(row.path)) { del.run(row.id); removed++; continue; }
       const lp = path.resolve(row.path).toLowerCase();
       const hit = rs.find(x => lp.startsWith(x.k));
       if (!hit) { del.run(row.id); removed++; continue; }
@@ -193,9 +205,20 @@ function saveSettings(body) {
     fileTypes = [...EXTS].filter(x => asked.includes(x)); // canonical order
   }
 
+  // Protected files: left out of the request means keep the current list.
+  let prot = normProtected(cfg.protected);
+  if (Array.isArray(body?.protected)) {
+    for (const s of body.protected.map(x => String(x).trim()).filter(Boolean)) {
+      if (/[\\/]/.test(s) && !isAbs(s))
+        throw new Error(`Protected "${s}" - use a full path (D:\\Models\\tool) or just a file name (template*.3mf)`);
+    }
+    prot = normProtected(body.protected);
+  }
+
   const onDisk = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
   onDisk.roots = roots;
   onDisk.fileTypes = fileTypes;
+  onDisk.protected = prot;
   onDisk.quarantine = quarantine;
   fs.copyFileSync(CFG_PATH, CFG_PATH + '.bak');
   const tmp = CFG_PATH + '.tmp';
@@ -204,10 +227,12 @@ function saveSettings(body) {
 
   cfg.roots = roots;
   cfg.fileTypes = fileTypes;
+  cfg.protected = prot;
+  isProtected = makeProtector(prot);
   cfg.quarantine = quarantine;
   const r = reconcileRoots(roots, new Set(fileTypes));
   startScan();
-  return { ok: true, roots, fileTypes, quarantine, ...r };
+  return { ok: true, roots, fileTypes, protected: prot, quarantine, ...r };
 }
 
 async function startScan() {
@@ -221,6 +246,7 @@ async function startScan() {
       concurrency: cfg.concurrency || 8,
       geometryMaxMB: cfg.geometryMaxMB || 0,
       exts: cfg.fileTypes,
+      isProtected,
       onProgress: st => Object.assign(scanState, st),
     });
     Object.assign(scanState, s);
@@ -299,6 +325,7 @@ const routes = {
   'GET /api/settings': () => ({
     roots: cfg.roots, quarantine: cfg.quarantine || '',
     fileTypes: [...normExts(cfg.fileTypes)], allFileTypes: [...EXTS],
+    protected: normProtected(cfg.protected),
     quarantineDefault: path.join(DATA, '_quarantine'),
   }),
   'POST /api/settings': (body) => saveSettings(body),
@@ -444,8 +471,16 @@ const routes = {
     return ren.planFromTitles(rows);
   },
 
-  'POST /api/rename/apply': (body) => ren.apply(db, body.plan || []),
-  'POST /api/rename/undo': (body) => ren.undo(db, body.batch),
+  // The plan comes from the page, so protected files are dropped here too,
+  // not just left out of the list the page builds it from.
+  'POST /api/rename/apply': (body) => {
+    const plan = body.plan || [];
+    const blocked = plan.filter(p => isProtected(p.from) || isProtected(p.to));
+    const r = ren.apply(db, plan.filter(p => !blocked.includes(p)));
+    for (const p of blocked) r.errors.push({ from: p.from, error: PROTECTED_MSG });
+    return r;
+  },
+  'POST /api/rename/undo': (body) => ren.undo(db, body.batch, isProtected),
   'GET /api/rename/batches': () => ren.batches(db),
 
   // "Clean titles" - strips the designer's name, a short word list (cute,
@@ -508,8 +543,11 @@ async function osAction(name, body) {
   // hard delete.
   if (name === 'recycle') {
     const get = db.prepare('SELECT path FROM files WHERE id=?');
-    const paths = (body.ids || []).map(id => get.get(id)?.path).filter(Boolean);
-    if (!paths.length) return { recycled: 0 };
+    const asked = (body.ids || []).map(id => get.get(id)?.path).filter(Boolean);
+    const blocked = asked.filter(p => isProtected(p));
+    const paths = asked.filter(p => !isProtected(p));
+    const note = blocked.length ? `Skipped ${blocked.length} protected file${blocked.length === 1 ? '' : 's'}: ${blocked.join(', ')}` : '';
+    if (!paths.length) return { recycled: 0, asked: asked.length, blocked: blocked.length, detail: note };
     const listFile = path.join(DATA, '_recycle.txt');
     fs.writeFileSync(listFile, paths.join('\r\n'), 'utf8');
     // PowerShell can't read a script from inside a packaged binary, so a
@@ -527,15 +565,18 @@ async function osAction(name, body) {
     const out = (r.stdout || '') + (r.stderr || '');
     const del = db.prepare('DELETE FROM files WHERE path=?');
     let gone = 0;
-    for (const p of paths) if (!fs.existsSync(longPath(p))) { del.run(p); gone++; }
+    for (const p of paths) if (!fs.existsSync(longPath(p))) { del.run(p); gone++; logAction('recycle', p); }
+    for (const p of blocked) logAction('recycle-refused-protected', p);
     try { fs.unlinkSync(listFile); } catch {}
-    return { recycled: gone, asked: paths.length, detail: out.trim() };
+    return { recycled: gone, asked: asked.length, blocked: blocked.length,
+             detail: [note, out.trim()].filter(Boolean).join('\n') };
   }
 
   // Rename a single file in place, recorded so History can undo it.
   if (name === 'renameOne') {
     const row = db.prepare('SELECT id,path,root,name FROM files WHERE id=?').get(body.id);
     if (!row) throw new Error('unknown file');
+    if (isProtected(row.path)) throw new Error(`${row.name} is ${PROTECTED_MSG}`);
     const ext = path.extname(row.name);
     const base = ren.clean(String(body.name || '').replace(/\.[^.]*$/, ''));
     if (!base) throw new Error('empty name');
@@ -559,13 +600,14 @@ async function osAction(name, body) {
     for (const id of body.ids || []) {
       const r = get.get(id);
       if (!r) continue;
+      if (isProtected(r.path)) { errors.push({ path: r.path, error: PROTECTED_MSG }); logAction('quarantine-refused-protected', r.path); continue; }
       let target = path.join(dest, r.name);
       let n = 2;
       while (fs.existsSync(longPath(target))) {
         const e = path.extname(r.name);
         target = path.join(dest, `${path.basename(r.name, e)} (${n++})${e}`);
       }
-      try { fs.renameSync(longPath(r.path), longPath(target)); del.run(id); moved++; }
+      try { fs.renameSync(longPath(r.path), longPath(target)); del.run(id); moved++; logAction('quarantine', r.path, target); }
       catch (e) { errors.push({ path: r.path, error: String(e.message || e) }); }
     }
     return { moved, dest, errors };

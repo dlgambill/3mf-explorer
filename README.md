@@ -88,6 +88,16 @@ you remove a folder or untick a type, those files drop out of the list
 (nothing on disk is touched, and your titles, designers and tags come back
 if you add them again).
 
+**Protected files** are for things that live in your library folders but
+aren't models - a slicer template another app reads, a backup folder, your
+scripts. Put a full folder path to protect everything in it, or a file name
+(`*` works as a wildcard, like `template*.3mf`) to protect that name in any
+folder. Protected files never show up in the list, so they can't turn up as
+duplicates, and 3MF Explorer refuses to delete, move or rename them even if
+something asks it to. Everything the app sends to the Recycle Bin or to
+quarantine is written to `_actions-log.txt`, so you can always see what went
+where.
+
 Everything else lives in `config.json`, which Settings also writes to. Edit
 it with any text editor, save, and restart 3MF Explorer.
 
@@ -96,6 +106,7 @@ it with any text editor, save, and restart 3MF Explorer.
   "port": 7333,
   "roots": ["D:\\3D Models", "D:\\Downloads"],
   "fileTypes": [".3mf", ".stl", ".obj"],
+  "protected": ["D:\\3D Models\\_templates", "template*.3mf"],
   "quarantine": "D:\\3D Models\\_quarantine",
   "concurrency": 0,
   "geometryMaxMB": 0,
@@ -110,6 +121,9 @@ it with any text editor, save, and restart 3MF Explorer.
   After a hand edit, restart and hit **Rescan**.
 - **`fileTypes`** - which of `.3mf`, `.stl` and `.obj` to index (the Settings
   tab edits this too). Leave it out to get all three.
+- **`protected`** - files 3MF Explorer must never list, delete, move or
+  rename. Full folder paths or file names (with `*` wildcards). Settings
+  edits this too.
 - **`quarantine`** - where "Move to quarantine" puts files. Leave it empty to
   use a `_quarantine` folder next to the program. It works best on the same
   drive as your library, because moving a file across drives is not a
