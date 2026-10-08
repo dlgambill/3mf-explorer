@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- 3MF Explorer: an isometric print cube on the app's panel color.
+       Three face tones of the accent so it reads as 3D even at 16px, and a
+       solid tile behind it so it holds up on light and dark tab bars. -->
+  <rect width="32" height="32" rx="7" fill="#171a21"/>
+  <polygon points="16,4.5 27,10.6 16,16.7 5,10.6" fill="#ddd2ff"/>
+  <polygon points="5,10.6 16,16.7 16,28 5,21.9" fill="#b9a2ff"/>
+  <polygon points="27,10.6 27,21.9 16,28 16,16.7" fill="#7354e0"/>
+  <!-- layer lines on the side faces: the "printed" part -->
+  <path d="M5 14.4 16 20.5 27 14.4M5 18.2 16 24.3 27 18.2" fill="none"
+        stroke="#171a21" stroke-opacity=".35" stroke-width="1"/>
+</svg>

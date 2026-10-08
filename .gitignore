@@ -36,3 +36,4 @@ _scan*
 _server*
 config.json.bak
 config.json.tmp
+scripts/contrast.py
