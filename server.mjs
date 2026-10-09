@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openDb, getMeta, setMeta } from './lib/db.mjs';
 import { scan, longPath, EXTS, normExts } from './lib/scan.mjs';
@@ -510,18 +510,39 @@ const knownPath = p => !!p && !!db.prepare('SELECT 1 FROM files WHERE path=?').g
 // script (the service's run wrapper sets it), the program goes through it:
 // it points an Interactive Task Scheduler task at the program and runs it on
 // the signed-in desktop. Started by hand, it spawns directly as before.
+// Resolves once the program has been handed to the desktop, rejects with the
+// launcher's own error otherwise - so the button reports a failure instead of
+// toasting "Opening..." over nothing.
+//
+// 2026-10-08: this used spawn(..., { detached: true, stdio: 'ignore' }) for the
+// launcher too. A detached PowerShell started from the service never got as far
+// as re-pointing the desktop task (its action and LastRunTime did not move), and
+// with stdio ignored there was no error to see - Open in Snapmaker Orca and Show
+// in folder silently did nothing. Same call shape as the Hub's working
+// modules/desktop.js now: execFile, wait for it, keep stderr.
 function launchOnDesktop(exe, target, prefix = '') {
   const launcher = process.env.U1_DESKTOP_LAUNCHER;
-  if (!launcher) { spawn(exe, [prefix + target], { detached: true, stdio: 'ignore' }).unref(); return; }
+  if (!launcher) {
+    return new Promise((resolve, reject) => {
+      try { spawn(exe, [prefix + target], { detached: true, stdio: 'ignore' }).unref(); resolve({ via: 'spawn' }); }
+      catch (e) { reject(e); }
+    });
+  }
   const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher, '-Exe', exe, '-Target', target];
   if (prefix) args.push('-Prefix', prefix);
-  spawn('powershell.exe', args, { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  return new Promise((resolve, reject) => {
+    execFile('powershell.exe', args, { windowsHide: true, timeout: 20000 }, (err, stdout, stderr) => {
+      if (err) return reject(new Error('could not open on the desktop: ' +
+        (String(stderr || '').trim().split(/\r?\n/)[0] || err.message)));
+      resolve({ via: 'desktop task' });
+    });
+  });
 }
 
 async function osAction(name, body) {
   if (name === 'reveal') {
     if (!knownPath(body.path)) throw new Error('unknown path');
-    launchOnDesktop('explorer.exe', body.path, '/select,');
+    await launchOnDesktop('explorer.exe', body.path, '/select,');
     return { ok: true };
   }
 
@@ -535,7 +556,7 @@ async function osAction(name, body) {
       : (list.find(a => a.default) || list[0]);
     if (!app) throw new Error('no slicer configured');
     if (!fs.existsSync(app.exe)) throw new Error(app.name + ' not found at ' + app.exe);
-    launchOnDesktop(app.exe, body.path);
+    await launchOnDesktop(app.exe, body.path);
     return { ok: true, app: app.name };
   }
 
