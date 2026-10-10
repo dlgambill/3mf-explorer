@@ -44,6 +44,8 @@
 
   <footer>
     <span class="stat" id="selstat">0 selected</span>
+    <!-- touch screens only: lets a tap add to the selection instead of replacing it -->
+    <button class="btn touch-only" id="multisel" aria-pressed="false">Select multiple</button>
     <input type="text" id="pattern" value="{designer} - {title}" title="Rename pattern">
     <button class="btn" id="preview">Preview rename</button>
     <input type="text" id="cleanwords" value="cute, articulated, flexi" size="20" title="Words to strip from the Title field, comma-separated">

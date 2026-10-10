@@ -272,7 +272,11 @@ tbody tr.sel td.cur { background:var(--accent-soft); }
    is untouched. Puts the selection count and "Mark for print" first in the
    footer (it wraps to several rows on a tablet, and the button used to land
    near the end) and gives the button a finger-sized target. */
+.touch-only { display:none; }
+/* pressed toggle reads like the active tab */
+.btn[aria-pressed="true"] { color:var(--accent); background:var(--accent-soft); border-color:var(--accent); }
 @media (pointer: coarse) {
-  footer #selstat   { order:-2; }
+  footer #selstat   { order:-3; }
+  footer #multisel  { order:-2; display:inline-block; min-height:44px; padding:10px 16px; font-size:15px; }
   footer #markPrint { order:-1; min-height:44px; padding:10px 20px; font-size:15px; }
 }

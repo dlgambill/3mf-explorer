@@ -9,6 +9,7 @@ const S = {
   filters: { ext: new Set(), designer: new Set(), application: new Set(),
              root: new Set(), tag: new Set(), dupe: null },
   q: '', tab: 'files', plan: null, titlePlan: null, allTags: [],
+  multi: false,          // touch screens: "Select multiple" toggle (see selectAt)
   cur: { r: 0, c: 0 },   // keyboard cell cursor: row index into view, column index
 };
 
@@ -244,13 +245,24 @@ function renderTable() {
 }
 
 // ---- selection --------------------------------------------------------
-// A finger has no Ctrl/Shift, so on a tablet a tap toggles that row in or
-// out of the selection instead of replacing it - that's how several files
-// get picked before "Mark for print". Mouse clicks behave exactly as before.
+// On a phone or tablet a tap selects just that file, like a mouse click:
+// tapping another file moves the selection to it, and tapping the selected
+// file again clears it. A finger has no Ctrl/Shift, so picking several files
+// (say, before "Mark for print") goes through the footer's "Select multiple"
+// toggle, shown only on touch screens - while it is on, taps add and remove
+// files instead. Mouse clicks behave exactly as before.
 // Tracked from pointerdown (not the click's own pointerType) because older
 // iPad Safari doesn't put pointerType on click events.
 let lastPointer = 'mouse';
 addEventListener('pointerdown', e => { lastPointer = e.pointerType; }, true);
+
+function setMultiSelect(on) {
+  S.multi = !!on;
+  const b = $('#multisel');
+  if (!b) return;
+  b.setAttribute('aria-pressed', String(S.multi));
+  b.textContent = S.multi ? 'Done selecting' : 'Select multiple';
+}
 
 function selectAt(i, ev) {
   const r = S.view[i];
@@ -260,9 +272,11 @@ function selectAt(i, ev) {
     const [a, b] = S.anchor < i ? [S.anchor, i] : [i, S.anchor];
     if (!ev.ctrlKey && !ev.metaKey) S.sel.clear();
     for (let k = a; k <= b; k++) S.sel.add(S.view[k].id);
-  } else if (ev.ctrlKey || ev.metaKey || touch) {
+  } else if (ev.ctrlKey || ev.metaKey || (touch && S.multi)) {
     S.sel.has(r.id) ? S.sel.delete(r.id) : S.sel.add(r.id);
     S.anchor = i;
+  } else if (touch && S.sel.size === 1 && S.sel.has(r.id)) {
+    S.sel.clear(); S.anchor = null;
   } else {
     S.sel.clear(); S.sel.add(r.id); S.anchor = i;
   }
@@ -791,6 +805,7 @@ function wire() {
     t.onclick = () => { S.plan = null; S.titlePlan = null; setTab(t.dataset.view); };
   }
   $('#rescan').onclick = rescan;
+  $('#multisel').onclick = () => setMultiSelect(!S.multi);
   $('#preview').onclick = previewRename;
   $('#applytitles').onclick = previewTitles;
   $('#applyren').onclick = applyRename;
