@@ -12,6 +12,7 @@ import * as ren from './lib/rename.mjs';
 import * as ct from './lib/cleanTitle.mjs';
 import * as xl from './lib/xlsx.mjs';
 import { makeProtector, normProtected } from './lib/protect.mjs';
+import { archiveDir, archiveTarget, restoreTarget, moveFile, pruneEmpty, isUnder, readHubPrints, eligible } from './lib/archive.mjs';
 
 // HERE is where the app's own files are (public/, recycle.ps1). DATA is where
 // config.json, library.db and .thumb-cache live: next to server.mjs when run
@@ -49,6 +50,14 @@ const logAction = (action, file, extra = '') => {
 };
 const THUMBS = path.join(DATA, '.thumb-cache');
 const db = openDb(path.join(DATA, 'library.db'));
+
+// "Used" = opened in a slicer or marked for print from here (or restored
+// from the archive). It counts like a print when deciding what to archive.
+const markUsed = paths => {
+  const up = db.prepare('UPDATE files SET last_used=? WHERE path=?');
+  const t = Date.now();
+  for (const p of paths) if (p) up.run(t, p);
+};
 
 let scanState = { running: false, total: 0, done: 0, added: 0, updated: 0,
                   skipped: 0, failed: 0, removed: 0, startedAt: null, finishedAt: null };
@@ -95,7 +104,8 @@ const ROW_SELECT = `
                          ORDER BY tag)), '')         AS tagstr,
          f.description, f.license, f.copyright, f.application,
          f.created, f.modified, f.objects, f.plates,
-         f.layer_height, f.nozzle, f.filaments, f.print_time, f.thumb
+         f.layer_height, f.nozzle, f.filaments, f.print_time, f.thumb,
+         f.first_seen, f.last_used
   FROM files f LEFT JOIN overrides o ON o.sha256 = f.sha256`;
 
 function dupeGroups() {
@@ -194,6 +204,26 @@ function saveSettings(body) {
       throw new Error(`The quarantine folder can't be inside a library folder unless it's named _quarantine.`);
   }
 
+  // Archive folder: blank means <first library folder>\_archive. It has to
+  // sit inside a library folder so archived files stay indexed (that is what
+  // makes "Include archive" work) and a move into it stays a same-drive rename.
+  // Left out of the request (an older page) means keep the current one.
+  let archive = String(body?.archive ?? cfg.archive ?? '').trim();
+  if (archive) {
+    if (!isAbs(archive)) throw new Error(`Archive "${archive}" isn't a full path`);
+    archive = path.resolve(archive);
+    if (!roots.some(r => rootKey(archive).startsWith(rootKey(r)) && rootKey(archive) !== rootKey(r)))
+      throw new Error('The archive folder has to be inside one of the library folders (for example X:\\Models\\_archive), so archived files stay searchable.');
+    if (path.basename(archive).toLowerCase() === '_quarantine' || (quarantine && rootKey(archive) === rootKey(quarantine)))
+      throw new Error("The archive folder can't be the quarantine folder.");
+  }
+  let autoArchive = autoCfg();
+  if (body?.autoArchive && typeof body.autoArchive === 'object') {
+    const days = Math.round(Number(body.autoArchive.days ?? autoArchive.days));
+    if (!(days >= 30 && days <= 3650)) throw new Error('Archive after: pick between 30 and 3650 days.');
+    autoArchive = { ...autoArchive, enabled: !!body.autoArchive.enabled, days };
+  }
+
   // File types: a subset of what the parsers read. Left out of the request
   // (an older page) means keep the current choice.
   let fileTypes = [...normExts(cfg.fileTypes)];
@@ -220,6 +250,8 @@ function saveSettings(body) {
   onDisk.fileTypes = fileTypes;
   onDisk.protected = prot;
   onDisk.quarantine = quarantine;
+  if (archive) onDisk.archive = archive; else delete onDisk.archive;
+  onDisk.autoArchive = autoArchive;
   fs.copyFileSync(CFG_PATH, CFG_PATH + '.bak');
   const tmp = CFG_PATH + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(onDisk, null, 2) + '\n', 'utf8');
@@ -230,13 +262,15 @@ function saveSettings(body) {
   cfg.protected = prot;
   isProtected = makeProtector(prot);
   cfg.quarantine = quarantine;
+  if (archive) cfg.archive = archive; else delete cfg.archive;
+  cfg.autoArchive = autoArchive;
   const r = reconcileRoots(roots, new Set(fileTypes));
   startScan();
-  return { ok: true, roots, fileTypes, protected: prot, quarantine, ...r };
+  return { ok: true, roots, fileTypes, protected: prot, quarantine, archive, autoArchive, ...r };
 }
 
 async function startScan() {
-  if (scanState.running) return;
+  if (scanState.running || archiveState.running) return;
   const roots = cfg.roots || [];
   try { reconcileRoots(roots); } catch (e) { console.error('reconcile:', e.message); }
   scanState = { running: true, total: 0, done: 0, added: 0, updated: 0, skipped: 0,
@@ -314,6 +348,154 @@ function applyTagSet(ids, list) {
   return shas.length;
 }
 
+// ---- archive -------------------------------------------------------------
+// Files nobody has printed in a long while move to an archive folder inside
+// the library (default <first library folder>\_archive). They stay indexed -
+// tags, titles and designers ride along because those are keyed by sha256 -
+// but the page hides them unless "Include archive" is ticked. Every move is
+// recorded in the renames table, so History can undo a whole run, and every
+// move is a rename on the same drive: nothing is copied, nothing is deleted.
+const DAY = 86400000;
+const AUTO_DEFAULTS = { enabled: true, days: 365, everyDays: 30 };
+const autoCfg = () => ({ ...AUTO_DEFAULTS, ...(cfg.autoArchive || {}) });
+const rootOf = p => (cfg.roots || []).map(r => path.resolve(r))
+  .sort((a, b) => b.length - a.length).find(r => isUnder(p, r));
+const batchName = prefix =>
+  `${prefix}-${new Date().toISOString().slice(0, 10)}-${Math.random().toString(36).slice(2, 6)}`;
+let archiveState = { running: false };
+
+const rowsByIds = ids => {
+  ids = (ids || []).filter(Number.isFinite);
+  return ids.length ? db.prepare(`SELECT id, path, name, root FROM files WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids) : [];
+};
+
+// One file at a time, yielding between files so a long run on the NAS
+// doesn't freeze the page.
+async function moveRows(rows, { prefix, target, stopAt, action }) {
+  if (archiveState.running) throw new Error('An archive run is already going - try again in a moment.');
+  archiveState = { running: true };
+  const batch = batchName(prefix);
+  const ins = db.prepare('INSERT INTO renames(batch,ts,old_path,new_path,undone) VALUES(?,?,?,?,0)');
+  const upd = db.prepare('UPDATE files SET path=?, name=?, root=?, rel=?, folder=? WHERE id=?');
+  const ts = Date.now();
+  let moved = 0; const errors = []; const done = [];
+  try {
+    for (const r of rows) {
+      try {
+        if (isProtected(r.path)) throw new Error(PROTECTED_MSG);
+        const to = target(r);
+        if (isProtected(to)) throw new Error('the destination is ' + PROTECTED_MSG);
+        moveFile(r.path, to, stopAt(r));
+        const root = rootOf(to) || r.root || '';
+        upd.run(to, path.basename(to), root, root ? path.relative(root, to) : '',
+                path.basename(path.dirname(to)), r.id);
+        ins.run(batch, ts, r.path, to);
+        logAction(action, r.path, to);
+        done.push({ from: r.path, to });
+        moved++;
+      } catch (e) {
+        errors.push({ path: r.path, error: String(e.message || e) });
+        if (isProtected(r.path)) logAction(action + '-refused-protected', r.path);
+      }
+      if (moved % 25 === 0) await new Promise(res => setImmediate(res));
+    }
+  } finally { archiveState = { running: false }; }
+  return { batch: moved ? batch : null, moved, errors, done };
+}
+
+function archiveRows(rows, prefix = 'archive') {
+  const dir = archiveDir(cfg);
+  if (!dir) throw new Error('Add a library folder in Settings first.');
+  return moveRows(rows.filter(r => !isUnder(r.path, dir)), {
+    prefix, action: prefix,
+    target: r => archiveTarget(r.path, cfg.roots, dir),
+    stopAt: r => rootOf(r.path),
+  });
+}
+
+// Back to where it came from when the move that archived it is on record
+// (and nothing has taken that spot since), otherwise to the same place
+// inside the library folder that the archive mirrors.
+async function unarchiveRows(rows) {
+  const dir = archiveDir(cfg);
+  if (!dir) throw new Error('Add a library folder in Settings first.');
+  const lastArchive = db.prepare(`SELECT id, old_path FROM renames WHERE new_path=? AND undone=0
+    AND (batch LIKE 'archive-%' OR batch LIKE 'auto-archive-%') ORDER BY id DESC LIMIT 1`);
+  const recorded = new Map();
+  const r = await moveRows(rows.filter(x => isUnder(x.path, dir)), {
+    prefix: 'unarchive', action: 'unarchive',
+    target: x => {
+      const rec = lastArchive.get(x.path);
+      if (rec && rootOf(rec.old_path) && !isUnder(rec.old_path, dir) && !fs.existsSync(longPath(rec.old_path))) {
+        recorded.set(x.path, rec.id);
+        return rec.old_path;
+      }
+      return restoreTarget(x.path, cfg.roots, dir);
+    },
+    stopAt: () => dir,
+  });
+  // The archive move is now spent - don't offer it as an undo in History.
+  const spent = db.prepare('UPDATE renames SET undone=1 WHERE id=?');
+  for (const d of r.done) if (recorded.has(d.from)) spent.run(recorded.get(d.from));
+  // Restoring is a deliberate "I want this", so it starts a fresh year.
+  markUsed(r.done.map(d => d.to));
+  return r;
+}
+
+function libraryRows() {
+  const rows = db.prepare(ROW_SELECT).all();
+  for (const r of rows) r.tags = r.tagstr ? r.tagstr.split(', ').filter(Boolean) : [];
+  return rows;
+}
+
+function autoArchivePlan() {
+  const a = autoCfg();
+  const dir = archiveDir(cfg);
+  const rows = libraryRows();
+  const prints = readHubPrints(cfg.hub?.dir);
+  const plan = dir ? eligible(rows, { days: a.days, prints, dir, isProtected }) : [];
+  return { a, dir, rows, plan };
+}
+
+function archiveStatus() {
+  const { a, dir, rows, plan } = autoArchivePlan();
+  const last = Number(getMeta(db, 'last_archive_run', 0)) || null;
+  let lastResult = null;
+  try { lastResult = JSON.parse(getMeta(db, 'last_archive_result', 'null')); } catch {}
+  return {
+    dir, enabled: !!a.enabled, days: a.days, everyDays: a.everyDays,
+    hubLinked: !!cfg.hub?.dir,
+    archived: dir ? rows.filter(r => isUnder(r.path, dir)).length : 0,
+    lastRun: last, lastResult,
+    nextRun: a.enabled ? Math.max((last || 0) + a.everyDays * DAY, Date.now()) : null,
+    wouldArchive: plan.length,
+    sample: plan.slice(0, 8).map(r => r.rel),
+    // the clock starts when this app first sees a file, so nothing can
+    // qualify until `days` after the oldest first sighting
+    earliest: (() => {
+      const first = rows.reduce((m, r) => r.first_seen && !isUnder(r.path, dir) && r.first_seen < m ? r.first_seen : m, Infinity);
+      return Number.isFinite(first) ? first + a.days * DAY : null;
+    })(),
+    running: archiveState.running,
+  };
+}
+
+// The monthly run. Checked every few hours; does its work when the last run
+// is at least everyDays old and no scan is going (a scan that sees a file
+// vanish mid-walk would drop its row and forget when it was first seen).
+async function runAutoArchive({ force = false } = {}) {
+  const { a, plan } = autoArchivePlan();
+  if (!force && !a.enabled) return { skipped: 'turned off in Settings' };
+  if (scanState.running || archiveState.running) return { skipped: 'busy - will try again later' };
+  const last = Number(getMeta(db, 'last_archive_run', 0));
+  if (!force && Date.now() - last < a.everyDays * DAY) return { skipped: 'not due yet' };
+  const r = await archiveRows(plan, 'auto-archive');
+  setMeta(db, 'last_archive_run', Date.now());
+  setMeta(db, 'last_archive_result', JSON.stringify({ ts: Date.now(), moved: r.moved, failed: r.errors.length, batch: r.batch }));
+  if (r.moved || r.errors.length) console.log(`  auto-archive: moved ${r.moved}, failed ${r.errors.length}${r.batch ? ' (History batch ' + r.batch + ')' : ''}`);
+  return r;
+}
+
 const routes = {
   'GET /api/config': () => ({
     roots: cfg.roots, port: cfg.port,
@@ -327,8 +509,23 @@ const routes = {
     fileTypes: [...normExts(cfg.fileTypes)], allFileTypes: [...EXTS],
     protected: normProtected(cfg.protected),
     quarantineDefault: path.join(DATA, '_quarantine'),
+    archive: cfg.archive || '',
+    archiveDefault: cfg.roots?.[0] ? path.join(path.resolve(cfg.roots[0]), '_archive') : '',
+    autoArchive: autoCfg(),
   }),
   'POST /api/settings': (body) => saveSettings(body),
+
+  // Archive / restore the selection, and the monthly run's status.
+  'POST /api/archive': (body) => {
+    if (scanState.running) throw new Error('A scan is running - try again when it finishes.');
+    return archiveRows(rowsByIds(body.ids), 'archive');
+  },
+  'POST /api/unarchive': (body) => {
+    if (scanState.running) throw new Error('A scan is running - try again when it finishes.');
+    return unarchiveRows(rowsByIds(body.ids));
+  },
+  'GET /api/archive/status': () => archiveStatus(),
+  'POST /api/archive/run': () => runAutoArchive({ force: true }),
 
   'GET /api/stats': () => {
     const s = db.prepare(`SELECT COUNT(*) files, COALESCE(SUM(size),0) bytes,
@@ -340,9 +537,11 @@ const routes = {
 
   'GET /api/rows': () => {
     const rows = db.prepare(ROW_SELECT).all();
+    const adir = archiveDir(cfg);
     for (const r of rows) {
       r.tags = r.tagstr ? r.tagstr.split(', ').filter(Boolean) : [];
       delete r.tagstr;
+      r.archived = isUnder(r.path, adir);
       // The scanner falls back to the filename when a file carries no embedded
       // title, which made Title a copy of Name on most rows. Blank it in that
       // case so a filled Title always means something you or the file chose.
@@ -414,6 +613,7 @@ const routes = {
     if (!rows.length) throw new Error('unknown files');
     const add = db.prepare('INSERT OR IGNORE INTO file_tags(sha256,tag) VALUES(?,?)');
     for (const r of rows) add.run(r.sha256, 'for-print');
+    markUsed(rows.map(r => r.path));
     const hub = await forwardToHub(rows);
     return { tagged: rows.length, hub };
   },
@@ -480,7 +680,19 @@ const routes = {
     for (const p of blocked) r.errors.push({ from: p.from, error: PROTECTED_MSG });
     return r;
   },
-  'POST /api/rename/undo': (body) => ren.undo(db, body.batch, isProtected),
+  'POST /api/rename/undo': (body) => {
+    if (archiveState.running) throw new Error('An archive run is going - try again in a moment.');
+    const r = ren.undo(db, body.batch, isProtected);
+    // Undoing an archive run puts files back on the shelf on purpose - give
+    // them a fresh year so next month's run doesn't sweep them straight back.
+    if (/^(auto-)?archive-/.test(String(body.batch || ''))) {
+      const moved = db.prepare('SELECT old_path, new_path FROM renames WHERE batch=? AND undone=1').all(body.batch);
+      markUsed(moved.map(x => x.old_path));
+      const dir = archiveDir(cfg);
+      for (const x of moved) pruneEmpty(path.dirname(x.new_path), dir);
+    }
+    return r;
+  },
   'GET /api/rename/batches': () => ren.batches(db),
 
   // "Clean titles" - strips the designer's name, a short word list (cute,
@@ -557,6 +769,7 @@ async function osAction(name, body) {
     if (!app) throw new Error('no slicer configured');
     if (!fs.existsSync(app.exe)) throw new Error(app.name + ' not found at ' + app.exe);
     await launchOnDesktop(app.exe, body.path);
+    markUsed([body.path]);
     return { ok: true, app: app.name };
   }
 
@@ -751,3 +964,10 @@ server.listen(PORT, '127.0.0.1', () => {
   const n = db.prepare('SELECT COUNT(*) c FROM files').get().c;
   console.log(`\n  ${n} files indexed. ${n ? '' : 'Hit Rescan in the UI to build the index.'}\n`);
 });
+
+// Monthly auto-archive: look a couple of minutes after start (so a restart
+// never races a scan someone kicks off right away), then every 6 hours. The
+// run itself only happens once the last one is autoArchive.everyDays old.
+const autoTick = () => runAutoArchive().catch(e => console.error('  auto-archive failed:', e.message));
+setTimeout(autoTick, 2 * 60 * 1000);
+setInterval(autoTick, 6 * 60 * 60 * 1000);

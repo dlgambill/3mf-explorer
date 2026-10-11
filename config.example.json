@@ -5,6 +5,8 @@
   "fileTypes": [".3mf", ".stl", ".obj"],
   "protected": [],
   "quarantine": "",
+  "archive": "",
+  "autoArchive": { "enabled": true, "days": 365, "everyDays": 30 },
   "concurrency": 0,
   "geometryMaxMB": 0,
   "openWith": [
@@ -14,8 +16,9 @@
     { "name": "PrusaSlicer",    "exe": "C:\\Program Files\\Prusa3D\\PrusaSlicer\\prusa-slicer.exe" }
   ],
   "hub": {
-    "_help": "Optional. Pairs with U1 Print Hub so \"Mark for print\" sends files to the Hub's Models tab. Paste the Hub's models.explorerToken here. Leave token empty if you don't use the Hub.",
+    "_help": "Optional. Pairs with U1 Print Hub so \"Mark for print\" sends files to the Hub's Models tab. Paste the Hub's models.explorerToken here. Leave token empty if you don't use the Hub. dir is the Hub's folder (where its printlog.json lives) - the monthly archive reads print history from it.",
     "url": "http://127.0.0.1:4545",
+    "dir": "",
     "token": ""
   }
 }

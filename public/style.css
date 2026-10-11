@@ -141,6 +141,15 @@ td.muted { color:var(--muted); }
 }
 .pill.dupe { color:var(--warn); border-color:var(--warn); }
 .pill.geo { color:var(--accent); border-color:var(--accent); }
+/* archived rows: shown only with "Include archive" ticked, and read quieter */
+tbody tr.arch td { color:var(--muted); }
+td .pill.arch { margin-right:6px; vertical-align:1px; }
+.incarch {
+  display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+  color:var(--muted); font-size:12px; cursor:pointer; user-select:none;
+}
+.incarch:hover, .incarch:has(input:checked) { color:var(--text); }
+.incarch input { accent-color:var(--accent); margin:0; }
 
 /* ---- detail panel ---- */
 #detail {
@@ -205,6 +214,14 @@ footer input[type=text]:focus { outline:none; border-color:var(--accent); }
 }
 .settings textarea:focus, .settings input[type=text]:focus { outline:none; border-color:var(--accent); }
 .settings .row { display:flex; gap:var(--s2); align-items:center; }
+.settings .archset { display:flex; flex-direction:column; gap:var(--s2); align-items:flex-start; }
+.settings label.inline { display:inline-flex; flex-wrap:wrap; align-items:center; gap:4px; cursor:pointer; }
+.settings label.inline input[type=checkbox] { accent-color:var(--accent); margin:0 4px 0 0; }
+.settings input.days {
+  width:6em; background:var(--bg); color:inherit; border:1px solid var(--field);
+  border-radius:var(--r); padding:3px 6px; font:12px var(--mono);
+}
+.settings input.days:focus { outline:none; border-color:var(--accent); }
 .settings .types { display:flex; flex-wrap:wrap; gap:var(--s4); }
 .settings .types label { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-family:var(--mono); font-size:12px; }
 .settings .types input { accent-color:var(--accent); margin:0; }

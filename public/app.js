@@ -10,6 +10,7 @@ const S = {
              root: new Set(), tag: new Set(), dupe: null },
   q: '', tab: 'files', plan: null, titlePlan: null, allTags: [],
   multi: false,          // touch screens: "Select multiple" toggle (see selectAt)
+  incArchive: false,     // header "Include archive" box - archived files hidden unless ticked
   cur: { r: 0, c: 0 },   // keyboard cell cursor: row index into view, column index
 };
 
@@ -93,6 +94,7 @@ function matches(r, terms) {
 }
 
 function passesFilters(r) {
+  if (r.archived && !S.incArchive) return false;
   const f = S.filters;
   for (const k of ['ext', 'designer', 'application', 'root']) {
     if (f[k].size && !f[k].has(r[k] || '')) return false;
@@ -203,7 +205,7 @@ function renderTable() {
   for (let i = start; i < end; i++) {
     const r = S.view[i];
     const tr = el('tr');
-    if (S.sel.has(r.id)) tr.className = 'sel';
+    tr.className = [S.sel.has(r.id) && 'sel', r.archived && 'arch'].filter(Boolean).join(' ');
     tr.dataset.i = i;
     for (const c of COLS) {
       let td, empty = false;
@@ -224,6 +226,7 @@ function renderTable() {
         const v = c.fmt ? c.fmt(r[c.k]) : (r[c.k] ?? '');
         td = el('td', null, String(v));
         if (c.edit && !String(v)) empty = true;
+        if (c.k === 'name' && r.archived) td.prepend(el('span', 'pill arch', 'archived'));
       }
       const ci = COLS.indexOf(c);
       td.className = [td.className, c.num && 'num', c.mono && 'mono', c.muted && 'muted',
@@ -288,8 +291,10 @@ function selectedRows() {
 }
 
 function renderStat() {
+  const hidden = S.incArchive ? 0 : (S.nArchived || 0);
   $('#selstat').textContent =
-    `${S.sel.size} selected · ${S.view.length.toLocaleString()} shown`;
+    `${S.sel.size} selected · ${S.view.length.toLocaleString()} shown` +
+    (hidden ? ` · ${hidden.toLocaleString()} archived hidden` : '');
 }
 
 // ---- detail -----------------------------------------------------------
@@ -550,6 +555,44 @@ async function renderSettings() {
   quar.value = s.quarantine;
   quar.placeholder = s.quarantineDefault;
 
+  // Archive: folder, the monthly run, and what it would do right now.
+  const aa = s.autoArchive || { enabled: true, days: 365, everyDays: 30 };
+  const arch = el('div', 'archset');
+  const archDir = el('input');
+  archDir.type = 'text';
+  archDir.spellcheck = false;
+  archDir.value = s.archive || '';
+  archDir.placeholder = s.archiveDefault || 'X:\\Models\\_archive';
+  const autoLab = el('label', 'inline');
+  const autoOn = el('input'); autoOn.type = 'checkbox'; autoOn.checked = !!aa.enabled;
+  const days = el('input', 'days'); days.type = 'number'; days.min = 30; days.max = 3650; days.value = aa.days;
+  autoLab.append(autoOn, document.createTextNode(` Every ${aa.everyDays} days, archive files not printed in `),
+    days, document.createTextNode(' days'));
+  const archStat = el('div', 'hint', 'Checking…');
+  const runNow = el('button', 'btn hidden', 'Archive them now');
+  runNow.onclick = async () => {
+    if (!confirm(`Archive ${runNow.dataset.n} files now?\n\nThey move into the archive folder and leave the list (tick "Include archive" to see them). Undoable from the History tab.`)) return;
+    runNow.disabled = true;
+    try {
+      const r = await api('/api/archive/run', {});
+      toast(`Archived ${r.moved || 0} files` + failNote(r), !!r.errors?.length);
+      await load(); renderSettings();
+    } catch (e) { toast(errText(e), true); runNow.disabled = false; }
+  };
+  arch.append(archDir, autoLab, archStat, runNow);
+  api('/api/archive/status').then(st => {
+    const d = ms => ms ? new Date(ms).toLocaleDateString() : 'never';
+    archStat.textContent =
+      `${st.archived.toLocaleString()} files in the archive. Last run: ${d(st.lastRun)}` +
+      (st.enabled ? `, next: ${d(st.nextRun)}.` : '. Automatic archiving is off.') +
+      ` Right now ${st.wouldArchive.toLocaleString()} file${st.wouldArchive === 1 ? '' : 's'} qualif${st.wouldArchive === 1 ? 'ies' : 'y'}` +
+      (st.sample?.length ? ` (${st.sample.slice(0, 3).join(', ')}${st.wouldArchive > 3 ? ', …' : ''})` : '') + '.' +
+      (!st.wouldArchive && st.earliest > Date.now()
+        ? ` The clock starts when this app first sees a file, so the first one can qualify on ${d(st.earliest)}.` : '') +
+      (st.hubLinked ? '' : ' Print history from U1 Print Hub is not connected (hub.dir in config.json), so only opens and print requests from here count.');
+    if (st.wouldArchive) { runNow.dataset.n = st.wouldArchive; runNow.classList.remove('hidden'); }
+  }).catch(e => { archStat.textContent = 'Could not check: ' + errText(e); });
+
   const save = el('button', 'btn primary', 'Save and rescan');
   save.onclick = async () => {
     save.disabled = true;
@@ -557,7 +600,8 @@ async function renderSettings() {
       const fileTypes = typeBoxes.filter(cb => cb.checked).map(cb => cb.value);
       if (!fileTypes.length) return toast('Pick at least one file type.', true);
       const r = await api('/api/settings', { roots: roots.value.split(/\r?\n/), fileTypes,
-        protected: prot.value.split(/\r?\n/), quarantine: quar.value });
+        protected: prot.value.split(/\r?\n/), quarantine: quar.value,
+        archive: archDir.value, autoArchive: { enabled: autoOn.checked, days: Number(days.value) } });
       toast(r.removed
         ? `Saved - ${r.removed.toLocaleString()} files no longer match and left the list`
         : 'Saved');
@@ -582,6 +626,11 @@ async function renderSettings() {
       '(* works as a wildcard) to protect that name in any folder.', prot),
     box('Quarantine folder',
       'Where "Move to quarantine" puts files. Leave blank to use ' + s.quarantineDefault + '.', quar),
+    box('Archive',
+      'Archived files move here and are hidden from the list unless "Include archive" is ticked next to the search box. ' +
+      'It has to be inside a library folder. Leave blank to use ' + (s.archiveDefault || '<first library folder>\\_archive') + '. ' +
+      'A file only qualifies once it has been in the library that long, with no print recorded by U1 Print Hub and no ' +
+      'open-in-slicer or "Mark for print" from here in that time. Protected files and files tagged for-print are never archived.', arch),
     actions);
   p.append(wrap);
 }
@@ -753,6 +802,7 @@ async function load() {
   refreshTags();
 
   S.rows = rows;
+  S.nArchived = rows.filter(r => r.archived).length;
   S.dupes = dupes;
   S.byId = new Map(rows.map(r => [r.id, r]));
   S.sel = new Set([...S.sel].filter(id => S.byId.has(id)));
@@ -783,6 +833,12 @@ function setTab(name) {
 
 function wire() {
   $('#q').oninput = e => { S.q = e.target.value; recompute(); };
+  $('#incarch').onchange = e => {
+    S.incArchive = e.target.checked;
+    // hidden rows shouldn't stay selected behind your back
+    if (!S.incArchive) for (const id of [...S.sel]) if (S.byId.get(id)?.archived) S.sel.delete(id);
+    recompute(); renderDetail();
+  };
   $('#tablewrap').onscroll = () => { if (S.tab === 'files' && !S.plan && !S.titlePlan) renderTable(); };
   $('#tbody').onclick = e => {
     // clicking a tag chip filters by that tag instead of selecting the row
@@ -960,6 +1016,34 @@ async function recycle(ids) {
   } catch (e) { toast(e.message, true); }
 }
 
+// ---- archive ------------------------------------------------------------
+// Moves into the archive folder (Settings) and back. Same drive, nothing
+// copied or deleted, and each run is a History batch you can undo.
+const failNote = r => r.errors?.length
+  ? ` - ${r.errors.length} couldn't move (${r.errors[0].error})` : '';
+
+async function archiveFiles(ids) {
+  if (!ids.length) return;
+  try {
+    const r = await api('/api/archive', { ids });
+    toast(`Archived ${r.moved} file${r.moved === 1 ? '' : 's'}` +
+      (S.incArchive ? '' : ' - tick "Include archive" to see them') +
+      failNote(r) + (r.moved ? '. Undo from History.' : ''), !!r.errors?.length);
+    if (!S.incArchive) S.sel.clear();
+    await load();
+  } catch (e) { toast(errText(e), true); }
+}
+
+async function unarchiveFiles(ids) {
+  if (!ids.length) return;
+  try {
+    const r = await api('/api/unarchive', { ids });
+    toast(`Restored ${r.moved} file${r.moved === 1 ? '' : 's'} to the library` + failNote(r),
+      !!r.errors?.length);
+    await load();
+  } catch (e) { toast(errText(e), true); }
+}
+
 // ---- inline rename ------------------------------------------------------
 function renameInline(rowIndex) {
   const row = S.view[rowIndex];
@@ -1050,6 +1134,12 @@ function showMenu(x, y, rowIndex) {
     S.q = 'geom:' + row.geom; $('#q').value = S.q; recompute();
   }, null, many);
   sep();
+  const picked = ids.map(i => S.byId.get(i)).filter(Boolean);
+  const inArch = picked.filter(r => r.archived), onShelf = picked.filter(r => !r.archived);
+  if (onShelf.length) item(many ? `Archive ${onShelf.length} file${onShelf.length === 1 ? '' : 's'}` : 'Archive',
+    () => archiveFiles(onShelf.map(r => r.id)));
+  if (inArch.length) item(many ? `Restore ${inArch.length} from archive` : 'Restore from archive',
+    () => unarchiveFiles(inArch.map(r => r.id)));
   item('Move to quarantine', () => $('#quarantine').click());
   item('Delete to Recycle Bin', () => recycle(ids), 'danger');
 
