@@ -1,0 +1,9 @@
+# Changelog
+
+## 1.6.0 - safety fixes
+
+- Protected files now have a built-in floor that config.json cannot remove: `u1_template*.3mf`, `filament_types.3mf`, anything under a `_templates` folder and anything under `tool/_protected_backups`. The service log warns when the configured list is empty, and Settings asks before a save that stops protecting an entry.
+- Batch rename no longer accepts a plan from the page. Apply sends the same `{ids, pattern}` or `{ids, titles}` it previewed; the server rebuilds the plan from the index and refuses any entry that leaves the file's folder, lands outside a library folder, touches a protected name, or changed since the preview. Failures now list the file and the reason.
+- A rescan no longer drops index rows for a library folder that is missing or that had read errors during the walk (for example the NAS going offline mid-scan). Those rows, with their first-seen dates, stay until a clean rescan; the log says `skipped prune for <folder>: N errors`.
+- Automatic archiving is now off by default (it was on, including for any config.json without an `autoArchive` key). When turned on, it waits until one run by hand from Settings, where the "N files qualify" count is shown and the run refuses if that count changed. Print history from U1 Print Hub is matched by absolute path (the Hub's models folder from its config.json, resolved through realpath so a mapped drive and its share agree), and Settings reports how many of the Hub's printed files match.
+- New route-level tests run the real server on a throwaway folder with an empty protected list and post protected files to every route that moves, renames or deletes (Delete, quarantine, single rename, batch rename, undo, archive, restore, archive run, Excel import). Each must refuse and leave the file untouched. All of them failed against 1.5.0. `EXPLORER_DATA` points the server's data folder elsewhere for these tests.

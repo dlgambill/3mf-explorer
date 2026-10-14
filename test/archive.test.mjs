@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { archiveDir, archiveTarget, restoreTarget, isUnder, relKey, eligible, readHubPrints, moveFile } from '../lib/archive.mjs';
+import { archiveDir, archiveTarget, restoreTarget, isUnder, relKey, absKey, eligible, readHubPrints, hubLinkStats, moveFile } from '../lib/archive.mjs';
 
 const isWin = process.platform === 'win32';
 const root = isWin ? 'D:\\Models' : '/models';
@@ -51,7 +51,7 @@ test('eligible only picks files that have sat a full year unprinted and unused',
   const now = Date.UTC(2027, 9, 1);
   const old = now - 400 * DAY, recent = now - 20 * DAY;
   const dir = j(root, '_archive');
-  const row = (name, extra = {}) => ({ path: j(root, name), rel: name, first_seen: old, last_used: null, tags: [], ...extra });
+  const row = (name, extra = {}) => ({ path: j(root, name), root, rel: name, first_seen: old, last_used: null, tags: [], ...extra });
   const rows = [
     row('stale.3mf'),
     row('new.3mf', { first_seen: recent }),
@@ -63,24 +63,54 @@ test('eligible only picks files that have sat a full year unprinted and unused',
     row('keep.3mf'),
     { path: j(dir, 'already.3mf'), rel: '_archive/already.3mf', first_seen: old, tags: [] },
   ];
-  const prints = new Map([['printed.3mf', recent], ['printed-long-ago.3mf', old]]);
+  const prints = new Map([[absKey(root, 'printed.3mf'), recent], [absKey(root, 'printed-long-ago.3mf'), old]]);
   const got = eligible(rows, { now, days: 365, prints, dir, isProtected: p => p.endsWith('keep.3mf') }).map(r => r.rel);
   assert.deepEqual(got.sort(), ['printed-long-ago.3mf', 'stale.3mf']);
 });
 
-test('readHubPrints joins the print log to the models links, newest print wins', () => {
+// E2: print history is keyed by absolute path - the Hub's models folder
+// (from its config.json) plus the link, against the Explorer root plus rel.
+function hubFixture(modelsFolder) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-'));
+  fs.writeFileSync(path.join(tmp, 'config.json'), JSON.stringify({ models: { folder: modelsFolder, explorerToken: 'x' } }));
   fs.writeFileSync(path.join(tmp, 'printlog.json'), JSON.stringify({
     u1: { 'a.gcode': 100, 'b.gcode': 50 }, u1max: { 'a.gcode': 300 }, __filaments: { x: 1 },
   }));
   fs.writeFileSync(path.join(tmp, 'models-links.json'), JSON.stringify({
-    links: { 'a.gcode': 'U1/Designer/A.3mf', 'b.gcode': 'Designer/A.3mf', 'c.gcode': 'Other.3mf' },
+    links: { 'a.gcode': 'U1/Designer/A.3mf', 'b.gcode': 'Designer/A.3mf', 'c.gcode': 'Other.3mf', 'd.gcode': 'Never.3mf' },
   }));
-  const m = readHubPrints(tmp);
-  assert.equal(m.get('designer/a.3mf'), 300);
-  assert.equal(m.has('other.3mf'), false);
-  assert.equal(readHubPrints(path.join(tmp, 'nope')).size, 0);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  return tmp;
+}
+
+test('readHubPrints joins the print log to the models links by absolute path, newest print wins', () => {
+  const models = fs.mkdtempSync(path.join(os.tmpdir(), 'models-'));
+  const hub = hubFixture(models);
+  const m = readHubPrints(hub);
+  assert.equal(m.get(absKey(models, 'Designer/A.3mf')), 300);
+  assert.equal(m.has(absKey(models, 'Other.3mf')), false);   // linked, never printed
+  assert.equal(m.has('designer/a.3mf'), false);               // no relative keys any more
+  assert.equal(m.total, 1);                                   // distinct printed files
+  assert.equal(readHubPrints(path.join(hub, 'nope')).size, 0);
+  fs.rmSync(hub, { recursive: true, force: true });
+  fs.rmSync(models, { recursive: true, force: true });
+});
+
+test('the same folder reached two ways (drive letter vs share) still matches; a different folder does not', () => {
+  const models = fs.mkdtempSync(path.join(os.tmpdir(), 'models-'));
+  const alias = models + '-alias';
+  fs.symlinkSync(models, alias, 'junction');   // stands in for X:\_MMF -> \\nas\share\_MMF
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'other-'));
+  const hub = hubFixture(models);
+  fs.writeFileSync(path.join(hub, 'printlog.json'), JSON.stringify({ u1: { 'a.gcode': 400 * DAY } }));
+  const prints = readHubPrints(hub);
+  const row = r => ({ path: path.join(r, 'Designer', 'A.3mf'), root: r, rel: path.join('Designer', 'A.3mf'), first_seen: 1, tags: [] });
+  const elig = r => eligible([row(r)], { now: 401 * DAY, days: 30, prints, dir: path.join(r, '_archive') }).length;
+  assert.equal(elig(alias), 0, 'printed via the Hub, seen through the alias: not eligible');
+  assert.equal(elig(other), 1, 'same relative path in an unrelated folder must not borrow the print');
+  assert.deepEqual(hubLinkStats(prints, [row(alias)]), { matched: 1, total: 1 });
+  assert.deepEqual(hubLinkStats(prints, [row(other)]), { matched: 0, total: 1 });
+  fs.rmdirSync(alias);   // removes the junction only, never its target
+  for (const d of [hub, models, other]) fs.rmSync(d, { recursive: true, force: true });
 });
 
 test('moveFile refuses to overwrite and tidies only the folders it emptied', () => {

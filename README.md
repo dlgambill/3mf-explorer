@@ -255,8 +255,11 @@ see and search them too; they show an `archived` label.
 - **By hand:** right-click a file (or a selection) and choose **Archive**.
   Right-click an archived file and choose **Restore from archive** to put it
   back where it came from.
-- **Every 30 days, automatically:** files that have gone a year without
-  printing are archived. A file qualifies only when all of these are true:
+- **Every 30 days, automatically (off until you turn it on):** files that
+  have gone a year without printing are archived. Turn it on in Settings, then
+  check the "N files qualify" line and run it once with **Archive them now**;
+  automatic runs start only after that first run by hand. A file qualifies
+  only when all of these are true:
   this app has known about it for at least that long, no print of it is
   recorded by U1 Print Hub in that time (see below), and it hasn't been opened
   in a slicer or marked for print from here in that time. Protected files and
@@ -271,9 +274,13 @@ run is and how many files would go right now.
 
 Print history comes from U1 Print Hub's `printlog.json`, joined to the 3MF a
 gcode was sliced from through the Hub's `models-links.json`. Set `hub.dir` in
-`config.json` to the Hub's folder to use it. Prints of a gcode the Hub never
-linked to a 3MF can't be seen, so they don't count. Without the Hub, only
-opens and print requests from this app count.
+`config.json` to the Hub's folder to use it. Files are matched by full path
+(the Hub's models folder plus the link), so a mapped drive and the network
+share behind it count as the same folder. Settings shows how many of the
+Hub's printed files match a file here; 0 means the two apps are looking at
+different folders. Prints of a gcode the Hub never linked to a 3MF can't be
+seen, so they don't count. Without the Hub, only opens and print requests
+from this app count.
 
 ## Pairing with U1 Print Hub (optional)
 

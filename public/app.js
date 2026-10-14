@@ -556,7 +556,7 @@ async function renderSettings() {
   quar.placeholder = s.quarantineDefault;
 
   // Archive: folder, the monthly run, and what it would do right now.
-  const aa = s.autoArchive || { enabled: true, days: 365, everyDays: 30 };
+  const aa = s.autoArchive || { enabled: false, days: 365, everyDays: 30 };
   const arch = el('div', 'archset');
   const archDir = el('input');
   archDir.type = 'text';
@@ -574,7 +574,7 @@ async function renderSettings() {
     if (!confirm(`Archive ${runNow.dataset.n} files now?\n\nThey move into the archive folder and leave the list (tick "Include archive" to see them). Undoable from the History tab.`)) return;
     runNow.disabled = true;
     try {
-      const r = await api('/api/archive/run', {});
+      const r = await api('/api/archive/run', { expect: Number(runNow.dataset.n) });
       toast(`Archived ${r.moved || 0} files` + failNote(r), !!r.errors?.length);
       await load(); renderSettings();
     } catch (e) { toast(errText(e), true); runNow.disabled = false; }
@@ -589,7 +589,10 @@ async function renderSettings() {
       (st.sample?.length ? ` (${st.sample.slice(0, 3).join(', ')}${st.wouldArchive > 3 ? ', …' : ''})` : '') + '.' +
       (!st.wouldArchive && st.earliest > Date.now()
         ? ` The clock starts when this app first sees a file, so the first one can qualify on ${d(st.earliest)}.` : '') +
-      (st.hubLinked ? '' : ' Print history from U1 Print Hub is not connected (hub.dir in config.json), so only opens and print requests from here count.');
+      (st.enabled && st.needsReview ? ' Automatic runs start after you run it once by hand with Archive them now.' : '') +
+      (st.hubLinked
+        ? (st.hubLinks ? ` ${st.hubLinks.matched} of ${st.hubLinks.total} files printed through U1 Print Hub match a file here.` : '')
+        : ' Print history from U1 Print Hub is not connected (hub.dir in config.json), so only opens and print requests from here count.');
     if (st.wouldArchive) { runNow.dataset.n = st.wouldArchive; runNow.classList.remove('hidden'); }
   }).catch(e => { archStat.textContent = 'Could not check: ' + errText(e); });
 
@@ -599,6 +602,13 @@ async function renderSettings() {
     try {
       const fileTypes = typeBoxes.filter(cb => cb.checked).map(cb => cb.value);
       if (!fileTypes.length) return toast('Pick at least one file type.', true);
+      // Removing a protected entry is the one Settings change that can expose
+      // a file to Delete or rename, so it gets its own confirmation.
+      const protKey = x => String(x).trim().toLowerCase().replace(/\//g, '\\').replace(/\\+$/, '');
+      const keptProt = new Set(prot.value.split(/\r?\n/).map(protKey).filter(Boolean));
+      const droppedProt = (s.protected || []).filter(x => !keptProt.has(protKey(x)));
+      if (droppedProt.length && !confirm(`Stop protecting ${droppedProt.length} entr${droppedProt.length === 1 ? 'y' : 'ies'}?\n\n` +
+        droppedProt.join('\n') + '\n\nThis app could then delete, move or rename those files.')) return;
       const r = await api('/api/settings', { roots: roots.value.split(/\r?\n/), fileTypes,
         protected: prot.value.split(/\r?\n/), quarantine: quar.value,
         archive: archDir.value, autoArchive: { enabled: autoOn.checked, days: Number(days.value) } });
@@ -673,7 +683,9 @@ function showPlan(plan, heading) {
 async function previewRename() {
   const ids = [...S.sel];
   if (!ids.length) return alert('Select some files first.');
-  showPlan(await api('/api/rename/plan', { ids, pattern: $('#pattern').value }), 'Pattern');
+  const req = { ids, pattern: $('#pattern').value };
+  showPlan(await api('/api/rename/plan', req), 'Pattern');
+  S.planReq = req; // apply sends this back; the server rebuilds the plan
 }
 
 async function previewTitles() {
@@ -681,17 +693,21 @@ async function previewTitles() {
   if (!ids.length) return alert('Select some files first.');
   try {
     showPlan(await api('/api/rename/plan-titles', { ids }), 'Titles → filenames');
+    S.planReq = { ids, titles: true };
   } catch (e) { toast(e.message, true); }
 }
 
 async function applyRename() {
-  if (!S.plan) return;
+  if (!S.plan || !S.planReq) return;
   const changing = S.plan.filter(x => x.status !== 'unchanged' && x.status !== 'collision');
   if (!changing.length) return alert('Nothing to do.');
   if (!confirm(`Rename ${changing.length} files?\n\nThis is undoable from the History tab.`)) return;
-  const r = await api('/api/rename/apply', { plan: S.plan });
-  alert(`Renamed ${r.renamed} files.` + (r.errors.length ? `\n${r.errors.length} failed.` : ''));
-  S.plan = null;
+  const expect = Object.fromEntries(S.plan.map(x => [x.id, x.to]));
+  const r = await api('/api/rename/apply', { ...S.planReq, expect });
+  alert(`Renamed ${r.renamed} files.` + (r.errors.length
+    ? `\n${r.errors.length} failed:\n` + r.errors.slice(0, 5).map(e => `${String(e.from || '').split(/[\\/]/).pop()} - ${e.error}`).join('\n')
+    : ''));
+  S.plan = null; S.planReq = null;
   $('#applyren').classList.add('hidden');
   await load();
   setTab('files');

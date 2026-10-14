@@ -6,7 +6,7 @@
   "protected": [],
   "quarantine": "",
   "archive": "",
-  "autoArchive": { "enabled": true, "days": 365, "everyDays": 30 },
+  "autoArchive": { "enabled": false, "days": 365, "everyDays": 30 },
   "concurrency": 0,
   "geometryMaxMB": 0,
   "openWith": [

@@ -11,8 +11,8 @@ import { scan, longPath, EXTS, normExts } from './lib/scan.mjs';
 import * as ren from './lib/rename.mjs';
 import * as ct from './lib/cleanTitle.mjs';
 import * as xl from './lib/xlsx.mjs';
-import { makeProtector, normProtected } from './lib/protect.mjs';
-import { archiveDir, archiveTarget, restoreTarget, moveFile, pruneEmpty, isUnder, readHubPrints, eligible } from './lib/archive.mjs';
+import { makeProtector, normProtected, BUILTIN_PROTECTED } from './lib/protect.mjs';
+import { archiveDir, archiveTarget, restoreTarget, moveFile, pruneEmpty, isUnder, readHubPrints, hubLinkStats, eligible } from './lib/archive.mjs';
 
 // HERE is where the app's own files are (public/, recycle.ps1). DATA is where
 // config.json, library.db and .thumb-cache live: next to server.mjs when run
@@ -20,7 +20,10 @@ import { archiveDir, archiveTarget, restoreTarget, moveFile, pruneEmpty, isUnder
 // binary (the binary's bundled files are read-only).
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGED = !!process.pkg;
-const DATA = PACKAGED ? path.dirname(process.execPath) : HERE;
+// EXPLORER_DATA points DATA somewhere else - the route tests use it to run
+// the real server against a throwaway folder, never against a real library.
+const DATA = process.env.EXPLORER_DATA ? path.resolve(process.env.EXPLORER_DATA)
+  : PACKAGED ? path.dirname(process.execPath) : HERE;
 const CFG_PATH = path.join(DATA, 'config.json');
 
 // First run: no config.json yet, so write one from config.example.json (or
@@ -39,6 +42,13 @@ const cfg = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
 cfg.roots = Array.isArray(cfg.roots) ? cfg.roots : [];
 // Rebuilt whenever Settings saves the list. See lib/protect.mjs.
 let isProtected = makeProtector(cfg.protected);
+// The built-in floor always applies, but an empty configured list usually
+// means config.json was hand-edited or damaged - say so in the service log.
+const warnProtected = p => {
+  if (p.configEmpty) console.warn('  WARNING: "protected" in config.json is empty - only the built-in floor applies (' +
+    BUILTIN_PROTECTED.join(', ') + ').');
+};
+warnProtected(isProtected);
 const PROTECTED_MSG = 'protected in Settings - this app never moves, renames or deletes it';
 
 // Append-only audit trail of everything this app deletes or quarantines,
@@ -261,6 +271,7 @@ function saveSettings(body) {
   cfg.fileTypes = fileTypes;
   cfg.protected = prot;
   isProtected = makeProtector(prot);
+  warnProtected(isProtected);
   cfg.quarantine = quarantine;
   if (archive) cfg.archive = archive; else delete cfg.archive;
   cfg.autoArchive = autoArchive;
@@ -356,7 +367,8 @@ function applyTagSet(ids, list) {
 // recorded in the renames table, so History can undo a whole run, and every
 // move is a rename on the same drive: nothing is copied, nothing is deleted.
 const DAY = 86400000;
-const AUTO_DEFAULTS = { enabled: true, days: 365, everyDays: 30 };
+// E2: off unless turned on in Settings. Destructive automation is opt-in.
+const AUTO_DEFAULTS = { enabled: false, days: 365, everyDays: 30 };
 const autoCfg = () => ({ ...AUTO_DEFAULTS, ...(cfg.autoArchive || {}) });
 const rootOf = p => (cfg.roots || []).map(r => path.resolve(r))
   .sort((a, b) => b.length - a.length).find(r => isUnder(p, r));
@@ -368,6 +380,26 @@ const rowsByIds = ids => {
   ids = (ids || []).filter(Number.isFinite);
   return ids.length ? db.prepare(`SELECT id, path, name, root FROM files WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids) : [];
 };
+
+// Rename plans, built from the index in the order the ids were given. Used by
+// the preview routes and again by /api/rename/apply, so what gets applied is
+// always recomputed here, never taken from the page.
+const rowsInOrder = ids => {
+  if (!ids.length) return [];
+  const q = db.prepare(`${ROW_SELECT} WHERE f.id IN (${ids.map(() => '?').join(',')})`);
+  const map = new Map(q.all(...ids).map(r => [r.id, r]));
+  return ids.map(i => map.get(i)).filter(Boolean);
+};
+const planPattern = (ids, pattern) => ren.plan(rowsInOrder(ids), String(pattern || '{title}'));
+function planTitles(ids) {
+  const rows = rowsInOrder(ids);
+  for (const r of rows) {
+    r.tags = r.tagstr ? r.tagstr.split(', ').filter(Boolean) : [];
+    const stem = r.name.replace(/\.[^.]*$/, '');
+    if (r.title && r.title.toLowerCase() === stem.toLowerCase()) r.title = '';
+  }
+  return ren.planFromTitles(rows);
+}
 
 // One file at a time, yielding between files so a long run on the NAS
 // doesn't freeze the page.
@@ -454,11 +486,11 @@ function autoArchivePlan() {
   const rows = libraryRows();
   const prints = readHubPrints(cfg.hub?.dir);
   const plan = dir ? eligible(rows, { days: a.days, prints, dir, isProtected }) : [];
-  return { a, dir, rows, plan };
+  return { a, dir, rows, plan, prints };
 }
 
 function archiveStatus() {
-  const { a, dir, rows, plan } = autoArchivePlan();
+  const { a, dir, rows, plan, prints } = autoArchivePlan();
   const last = Number(getMeta(db, 'last_archive_run', 0)) || null;
   let lastResult = null;
   try { lastResult = JSON.parse(getMeta(db, 'last_archive_result', 'null')); } catch {}
@@ -467,9 +499,13 @@ function archiveStatus() {
     hubLinked: !!cfg.hub?.dir,
     archived: dir ? rows.filter(r => isUnder(r.path, dir)).length : 0,
     lastRun: last, lastResult,
-    nextRun: a.enabled ? Math.max((last || 0) + a.everyDays * DAY, Date.now()) : null,
+    nextRun: a.enabled && getMeta(db, 'archive_reviewed_at', '') ? Math.max((last || 0) + a.everyDays * DAY, Date.now()) : null,
     wouldArchive: plan.length,
     sample: plan.slice(0, 8).map(r => r.rel),
+    // automatic runs wait until someone has looked at the count and run it by hand once
+    needsReview: !getMeta(db, 'archive_reviewed_at', ''),
+    // how many of the Hub's printed files this app can tie to a row (0 of N = blind)
+    hubLinks: hubLinkStats(prints, rows),
     // the clock starts when this app first sees a file, so nothing can
     // qualify until `days` after the oldest first sighting
     earliest: (() => {
@@ -483,13 +519,21 @@ function archiveStatus() {
 // The monthly run. Checked every few hours; does its work when the last run
 // is at least everyDays old and no scan is going (a scan that sees a file
 // vanish mid-walk would drop its row and forget when it was first seen).
-async function runAutoArchive({ force = false } = {}) {
+// force = the "Archive them now" button. That run is also the review step:
+// the page showed "N files qualify" and asked to confirm N, so it sends
+// expect: N and the run refuses if the count moved since. Automatic runs
+// stay off until one reviewed run like that has happened.
+async function runAutoArchive({ force = false, expect } = {}) {
   const { a, plan } = autoArchivePlan();
   if (!force && !a.enabled) return { skipped: 'turned off in Settings' };
+  if (!force && !getMeta(db, 'archive_reviewed_at', '')) return { skipped: 'waiting for a first run by hand from Settings' };
   if (scanState.running || archiveState.running) return { skipped: 'busy - will try again later' };
   const last = Number(getMeta(db, 'last_archive_run', 0));
   if (!force && Date.now() - last < a.everyDays * DAY) return { skipped: 'not due yet' };
+  if (force && expect !== undefined && Number(expect) !== plan.length)
+    throw new Error(`The count changed (${plan.length} now, ${expect} shown) - check Settings again.`);
   const r = await archiveRows(plan, 'auto-archive');
+  if (force) setMeta(db, 'archive_reviewed_at', Date.now());
   setMeta(db, 'last_archive_run', Date.now());
   setMeta(db, 'last_archive_result', JSON.stringify({ ts: Date.now(), moved: r.moved, failed: r.errors.length, batch: r.batch }));
   if (r.moved || r.errors.length) console.log(`  auto-archive: moved ${r.moved}, failed ${r.errors.length}${r.batch ? ' (History batch ' + r.batch + ')' : ''}`);
@@ -525,7 +569,7 @@ const routes = {
     return unarchiveRows(rowsByIds(body.ids));
   },
   'GET /api/archive/status': () => archiveStatus(),
-  'POST /api/archive/run': () => runAutoArchive({ force: true }),
+  'POST /api/archive/run': (body) => runAutoArchive({ force: true, expect: body?.expect }),
 
   'GET /api/stats': () => {
     const s = db.prepare(`SELECT COUNT(*) files, COALESCE(SUM(size),0) bytes,
@@ -618,15 +662,7 @@ const routes = {
     return { tagged: rows.length, hub };
   },
 
-  'POST /api/rename/plan': (body) => {
-    const ids = body.ids || [];
-    if (!ids.length) return [];
-    const q = db.prepare(
-      `${ROW_SELECT} WHERE f.id IN (${ids.map(() => '?').join(',')})`);
-    const map = new Map(q.all(...ids).map(r => [r.id, r]));
-    const ordered = ids.map(i => map.get(i)).filter(Boolean);
-    return ren.plan(ordered, body.pattern || '{title}');
-  },
+  'POST /api/rename/plan': (body) => planPattern(body.ids || [], body.pattern),
 
   // Edit Title / Designer. Stored as an override against the content hash, so
   // it survives rescans, renames and moves - and every copy of the same file
@@ -659,25 +695,38 @@ const routes = {
   'POST /api/rename/plan-titles': (body) => {
     const ids = body.ids || [];
     if (!ids.length) throw new Error('select some files first');
-    const rows = db.prepare(
-      `${ROW_SELECT} WHERE f.id IN (${ids.map(() => '?').join(',')})`).all(...ids);
-    for (const r of rows) {
-      r.tags = r.tagstr ? r.tagstr.split(', ').filter(Boolean) : [];
-      const stem = r.name.replace(/\.[^.]*$/, '');
-      if (r.title && r.title.toLowerCase() === stem.toLowerCase()) r.title = '';
-    }
-    const order = new Map(ids.map((id, i) => [id, i]));
-    rows.sort((a, b) => order.get(a.id) - order.get(b.id));
-    return ren.planFromTitles(rows);
+    return planTitles(ids);
   },
 
-  // The plan comes from the page, so protected files are dropped here too,
-  // not just left out of the list the page builds it from.
+  // E1: the page sends what it previewed - {ids, pattern} or {ids, titles:
+  // true} - never paths. The plan is rebuilt here from the index, checked
+  // entry by entry against each file's row (same folder, inside a library
+  // folder, nothing protected), and `expect` (id -> the target the page
+  // showed) only drops entries that changed since the preview. A
+  // client-built {plan} is refused outright.
   'POST /api/rename/apply': (body) => {
-    const plan = body.plan || [];
-    const blocked = plan.filter(p => isProtected(p.from) || isProtected(p.to));
-    const r = ren.apply(db, plan.filter(p => !blocked.includes(p)));
-    for (const p of blocked) r.errors.push({ from: p.from, error: PROTECTED_MSG });
+    if (body.plan !== undefined) throw new Error('send {ids, pattern} or {ids, titles: true} - a plan built by the page is not accepted');
+    const ids = (Array.isArray(body.ids) ? body.ids : []).map(Number).filter(Number.isFinite);
+    if (!ids.length) throw new Error('select some files first');
+    let planned;
+    if (typeof body.pattern === 'string') planned = planPattern(ids, body.pattern);
+    else if (body.titles === true) planned = planTitles(ids);
+    else throw new Error('send {ids, pattern} or {ids, titles: true}');
+    const rows = new Map(rowsByIds(ids).map(r => [r.id, r]));
+    const { ok, refused } = ren.checkPlan(planned, rows, { isProtected, rootOf });
+    const expect = body.expect && typeof body.expect === 'object' ? body.expect : null;
+    const go = [];
+    for (const p of ok) {
+      const want = expect ? expect[p.id] : undefined;
+      if (want !== undefined && String(want).toLowerCase() !== p.to.toLowerCase())
+        refused.push({ id: p.id, from: p.from, error: 'changed since the preview - preview again' });
+      else go.push(p);
+    }
+    const r = ren.apply(db, go);
+    for (const x of refused) {
+      r.errors.push({ from: x.from, error: x.error });
+      if (isProtected(x.from) || /protected/.test(x.error)) logAction('rename-refused-protected', x.from || String(x.id));
+    }
     return r;
   },
   'POST /api/rename/undo': (body) => {
