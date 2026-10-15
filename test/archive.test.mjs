@@ -109,7 +109,8 @@ test('the same folder reached two ways (drive letter vs share) still matches; a 
   assert.equal(elig(other), 1, 'same relative path in an unrelated folder must not borrow the print');
   assert.deepEqual(hubLinkStats(prints, [row(alias)]), { matched: 1, total: 1 });
   assert.deepEqual(hubLinkStats(prints, [row(other)]), { matched: 0, total: 1 });
-  fs.rmdirSync(alias);   // removes the junction only, never its target
+  // a junction is a directory on Windows (rmdir), a symlink on Linux/macOS (unlink); both leave the target alone
+  try { fs.rmdirSync(alias); } catch { fs.unlinkSync(alias); }
   for (const d of [hub, models, other]) fs.rmSync(d, { recursive: true, force: true });
 });
 
