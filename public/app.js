@@ -898,7 +898,7 @@ function wire() {
     if (!confirm(
       `Import "${file.name}"?\n\n` +
       `Title, Designer and Tags will be updated to match the sheet, and any ` +
-      `row with Delete checked will be sent to the Recycle Bin.`)) return;
+      `row with Delete checked will be sent to the Recycle Bin.` + netNote())) return;
     try {
       const buf = await file.arrayBuffer();
       const r = await fetch('/api/import/xlsx', {
@@ -913,7 +913,8 @@ function wire() {
         `Titles changed: ${s.titles}\n` +
         `Designers changed: ${s.designers}\n` +
         `Tags changed: ${s.tags}\n` +
-        `Sent to Recycle Bin: ${s.deleted} of ${s.askedDelete} marked`);
+        `Sent to Recycle Bin: ${s.deleted} of ${s.askedDelete} marked` +
+        (s.quarantined ? `\nMoved to quarantine (network drive): ${s.quarantined}` : ''));
       await load();
     } catch (err) { toast(err.message, true); }
   };
@@ -1016,15 +1017,26 @@ async function openIn(row, appName) {
 }
 
 // ---- delete to recycle bin ---------------------------------------------
+// E4 (1.6.1): Windows has no Recycle Bin on a network drive, so the server
+// moves those files to quarantine instead. The confirmation says so when
+// any of the files (or, with no ids, any library folder) is on one.
+function netNote(ids) {
+  const roots = S.networkRoots || [];
+  if (!roots.length) return '';
+  const k = p => String(p || '').toLowerCase();
+  const hit = !ids || ids.some(id => { const p = k(S.byId.get(id)?.path); return roots.some(r => p.startsWith(k(r))); });
+  return hit ? '\n\nFiles on a network drive (' + roots.join(', ') + ') go to the quarantine folder instead - the Recycle Bin does not cover network drives.' : '';
+}
 async function recycle(ids) {
   if (!ids.length) return;
   const label = ids.length === 1
     ? S.byId.get(ids[0])?.name
     : ids.length + ' files';
-  if (!confirm(`Send ${label} to the Recycle Bin?\n\nRecoverable from Windows if you change your mind.`)) return;
+  if (!confirm(`Send ${label} to the Recycle Bin?\n\nRecoverable from Windows if you change your mind.` + netNote(ids))) return;
   try {
     const r = await api('/api/os/recycle', { ids });
     toast(`Recycled ${r.recycled} of ${r.asked}` +
+      (r.quarantined ? ` - ${r.quarantined} on a network drive moved to quarantine` : '') +
       (r.blocked ? ` - ${r.blocked} protected, left alone` : ''), !!r.blocked);
     S.sel.clear();
     await load();
@@ -1205,6 +1217,7 @@ function wireActions() {
 
   api('/api/config').then(c => {
     S.openWith = c.openWith || [];
+    S.networkRoots = c.networkRoots || [];
     const def = S.openWith.find(a => a.default && a.present) || S.openWith.find(a => a.present);
     const btn = el('button', 'btn', def ? 'Open in ' + def.name : 'No slicer found');
     btn.disabled = !def;

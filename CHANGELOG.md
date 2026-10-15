@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.1 - nothing moves over another file, network drives, cross-site requests
+
+- Delete on a network drive (a mapped drive such as X: or a `\\server\share` path) now moves the file to the quarantine folder instead. Windows has no Recycle Bin for network locations, so "send to the Recycle Bin" there was a permanent delete. The Delete confirmation says so when any selected file is on a network drive, and the result says how many files went to quarantine. If the app can't ask Windows which drives are network drives, it quarantines rather than guess. The Excel import's Delete column follows the same rule.
+- Every move now checks its destination first. Batch rename apply records an error for a file whose new name already exists, instead of replacing it (a case-only rename is still allowed). Batch rename, single rename and History undo refuse a protected destination name, the same as a protected source. Tidying empty folders after a move never removes a protected folder such as `_templates` or `tool/_protected_backups`, even an empty one.
+- Every POST must now be sent as `application/json` (the Excel import as `application/octet-stream`), and a request whose Origin is another site is refused with 403. Another web page open in the same browser can no longer send the app a delete request. If you reach the Explorer through a proxy that changes the Host header, list the page's origin in `allowedOrigins` in config.json.
+- New tests in `test/sprint2.test.mjs` cover each of these; 9 of the 12 failed against 1.6.0 (the other 3 test the new helper modules directly).
+
 ## 1.6.0 - safety fixes
 
 - Protected files now have a built-in floor that config.json cannot remove: `u1_template*.3mf`, `filament_types.3mf`, anything under a `_templates` folder and anything under `tool/_protected_backups`. The service log warns when the configured list is empty, and Settings asks before a save that stops protecting an entry.

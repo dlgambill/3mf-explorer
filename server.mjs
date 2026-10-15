@@ -13,6 +13,8 @@ import * as ct from './lib/cleanTitle.mjs';
 import * as xl from './lib/xlsx.mjs';
 import { makeProtector, normProtected, BUILTIN_PROTECTED } from './lib/protect.mjs';
 import { archiveDir, archiveTarget, restoreTarget, moveFile, pruneEmpty, isUnder, readHubPrints, hubLinkStats, eligible } from './lib/archive.mjs';
+import { postGuard } from './lib/guard.mjs';
+import { networkLetters, isNetworkPath } from './lib/drives.mjs';
 
 // HERE is where the app's own files are (public/, recycle.ps1). DATA is where
 // config.json, library.db and .thumb-cache live: next to server.mjs when run
@@ -417,7 +419,7 @@ async function moveRows(rows, { prefix, target, stopAt, action }) {
         if (isProtected(r.path)) throw new Error(PROTECTED_MSG);
         const to = target(r);
         if (isProtected(to)) throw new Error('the destination is ' + PROTECTED_MSG);
-        moveFile(r.path, to, stopAt(r));
+        moveFile(r.path, to, stopAt(r), isProtected);
         const root = rootOf(to) || r.root || '';
         upd.run(to, path.basename(to), root, root ? path.relative(root, to) : '',
                 path.basename(path.dirname(to)), r.id);
@@ -541,8 +543,12 @@ async function runAutoArchive({ force = false, expect } = {}) {
 }
 
 const routes = {
-  'GET /api/config': () => ({
+  'GET /api/config': async () => ({
     roots: cfg.roots, port: cfg.port,
+    // E4: library folders on a network drive, where Delete quarantines
+    // instead (Windows has no Recycle Bin there). The page names them in
+    // the Delete confirmation.
+    networkRoots: await (async () => { const L = await networkLetters(); return (cfg.roots || []).filter(r => isNetworkPath(r, L)); })(),
     openWith: (cfg.openWith || []).map(a => ({
       name: a.name, default: !!a.default, present: fs.existsSync(a.exe),
     })),
@@ -722,7 +728,7 @@ const routes = {
         refused.push({ id: p.id, from: p.from, error: 'changed since the preview - preview again' });
       else go.push(p);
     }
-    const r = ren.apply(db, go);
+    const r = ren.apply(db, go, isProtected);
     for (const x of refused) {
       r.errors.push({ from: x.from, error: x.error });
       if (isProtected(x.from) || /protected/.test(x.error)) logAction('rename-refused-protected', x.from || String(x.id));
@@ -738,7 +744,7 @@ const routes = {
       const moved = db.prepare('SELECT old_path, new_path FROM renames WHERE batch=? AND undone=1').all(body.batch);
       markUsed(moved.map(x => x.old_path));
       const dir = archiveDir(cfg);
-      for (const x of moved) pruneEmpty(path.dirname(x.new_path), dir);
+      for (const x of moved) pruneEmpty(path.dirname(x.new_path), dir, isProtected);
     }
     return r;
   },
@@ -824,13 +830,28 @@ async function osAction(name, body) {
 
   // Delete to the Recycle Bin. Recoverable on purpose - nothing here does a
   // hard delete.
+  // E4 (1.6.1): a network drive has no Recycle Bin, and Windows deletes
+  // outright when asked to recycle there. Those files go to quarantine instead
+  // (also recoverable), and the reply says how many went each way.
   if (name === 'recycle') {
-    const get = db.prepare('SELECT path FROM files WHERE id=?');
-    const asked = (body.ids || []).map(id => get.get(id)?.path).filter(Boolean);
+    const get = db.prepare('SELECT id, path FROM files WHERE id=?');
+    const rows = (body.ids || []).map(id => get.get(id)).filter(Boolean);
+    const asked = rows.map(r => r.path);
     const blocked = asked.filter(p => isProtected(p));
-    const paths = asked.filter(p => !isProtected(p));
-    const note = blocked.length ? `Skipped ${blocked.length} protected file${blocked.length === 1 ? '' : 's'}: ${blocked.join(', ')}` : '';
-    if (!paths.length) return { recycled: 0, asked: asked.length, blocked: blocked.length, detail: note };
+    const letters = await networkLetters();
+    const onNet = rows.filter(r => !isProtected(r.path) && isNetworkPath(r.path, letters));
+    const paths = asked.filter(p => !isProtected(p) && !isNetworkPath(p, letters));
+    const notes = [];
+    if (blocked.length) notes.push(`Skipped ${blocked.length} protected file${blocked.length === 1 ? '' : 's'}: ${blocked.join(', ')}`);
+    let quarantined = 0, qdest = '';
+    if (onNet.length) {
+      const q = quarantineIds(onNet.map(r => r.id));
+      quarantined = q.moved; qdest = q.dest;
+      notes.push(`${q.moved} file${q.moved === 1 ? '' : 's'} on a network drive moved to quarantine (${q.dest}) - the Recycle Bin does not cover network drives`);
+      for (const e of q.errors) notes.push(e.path + ': ' + e.error);
+    }
+    const note = notes.join('\n');
+    if (!paths.length) return { recycled: 0, quarantined, quarantineDir: qdest || undefined, asked: asked.length, blocked: blocked.length, detail: note };
     const listFile = path.join(DATA, '_recycle.txt');
     fs.writeFileSync(listFile, paths.join('\r\n'), 'utf8');
     // PowerShell can't read a script from inside a packaged binary, so a
@@ -851,7 +872,7 @@ async function osAction(name, body) {
     for (const p of paths) if (!fs.existsSync(longPath(p))) { del.run(p); gone++; logAction('recycle', p); }
     for (const p of blocked) logAction('recycle-refused-protected', p);
     try { fs.unlinkSync(listFile); } catch {}
-    return { recycled: gone, asked: asked.length, blocked: blocked.length,
+    return { recycled: gone, quarantined, quarantineDir: qdest || undefined, asked: asked.length, blocked: blocked.length,
              detail: [note, out.trim()].filter(Boolean).join('\n') };
   }
 
@@ -865,6 +886,8 @@ async function osAction(name, body) {
     if (!base) throw new Error('empty name');
     const target = path.join(path.dirname(row.path), base + ext);
     if (target === row.path) return { ok: true, unchanged: true };
+    // audit gap (1.6.1): the destination name is checked like the source.
+    if (isProtected(target)) throw new Error(`${path.basename(target)} is ${PROTECTED_MSG}`);
     if (fs.existsSync(longPath(target))) throw new Error('a file with that name already exists');
     fs.renameSync(longPath(row.path), longPath(target));
     db.prepare('UPDATE files SET path=?, name=?, rel=? WHERE id=?')
@@ -874,13 +897,19 @@ async function osAction(name, body) {
       .run('single-' + Date.now().toString(36), Date.now(), row.path, target);
     return { ok: true, path: target, name: path.basename(target) };
   }
-  if (name === 'quarantine') {
+  if (name === 'quarantine') return quarantineIds(body.ids || []);
+  throw new Error('unknown action');
+}
+
+// Move indexed files into the quarantine folder (never over an existing file).
+function quarantineIds(idList) {
+  {
     const dest = cfg.quarantine || path.join(DATA, '_quarantine');
     fs.mkdirSync(longPath(dest), { recursive: true });
     const get = db.prepare('SELECT path,name FROM files WHERE id=?');
     const del = db.prepare('DELETE FROM files WHERE id=?');
     let moved = 0; const errors = [];
-    for (const id of body.ids || []) {
+    for (const id of idList) {
       const r = get.get(id);
       if (!r) continue;
       if (isProtected(r.path)) { errors.push({ path: r.path, error: PROTECTED_MSG }); logAction('quarantine-refused-protected', r.path); continue; }
@@ -895,13 +924,19 @@ async function osAction(name, body) {
     }
     return { moved, dest, errors };
   }
-  throw new Error('unknown action');
 }
 
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost');
     const key = req.method + ' ' + url.pathname;
+
+    // E9 (1.6.1): every POST must be a non-simple request from this app's
+    // own origin, so no other web page can drive it (see lib/guard.mjs).
+    if (req.method === 'POST') {
+      const why = postGuard(req, { allowedOrigins: Array.isArray(cfg.allowedOrigins) ? cfg.allowedOrigins : [] });
+      if (why) { req.resume(); return send(res, 403, { error: why }); }
+    }
 
     // cached thumbnails
     if (url.pathname.startsWith('/thumb/')) {
@@ -967,15 +1002,16 @@ const server = http.createServer(async (req, res) => {
         if (newStr !== (cur.tagstr || '')) { applyTagSet([p.id], newList); tags++; }
       }
 
-      let deleted = 0, recycleDetail = '';
+      let deleted = 0, quarantined = 0, recycleDetail = '';
       if (toDelete.length) {
         const r = await osAction('recycle', { ids: toDelete });
         deleted = r.recycled;
+        quarantined = r.quarantined || 0;
         recycleDetail = r.detail || '';
       }
       return send(res, 200, {
         total: parsed.length, skipped, titles, designers, tags,
-        askedDelete: toDelete.length, deleted, recycleDetail,
+        askedDelete: toDelete.length, deleted, quarantined, recycleDetail,
       });
     }
 
