@@ -241,7 +241,8 @@ keeps them.
 Designer and Tags columns, or set the Delete column to `TRUE` for files you
 want gone, then **Import from Excel**. Rows are matched by ID, and everything
 else in the sheet is there for reference only. Deleted files go to the
-Recycle Bin, never a hard delete.
+Recycle Bin (or to quarantine on a network drive, see below), never a hard
+delete.
 
 ### Archive
 
@@ -310,6 +311,8 @@ If you don't use the Hub, leave `token` empty and ignore the button.
   rename, move and delete files in your library. If you ever expose it beyond
   your own computer (a reverse proxy, a tunnel), put a login in front of it
   first, for example Cloudflare Access or a proxy with authentication.
+- Other web pages open in the same browser cannot send it requests: every
+  change has to come from the app's own page.
 - It never contacts the internet. The only outgoing call is to your U1 Print
   Hub, and only if you set `hub.token`.
 
@@ -319,6 +322,10 @@ If you don't use the Hub, leave `token` empty and ignore the button.
   it and parses every vertex to build the geometry signature. On a library of
   a hundred gigabytes or more, expect it to run for a good stretch. Every scan
   after that only looks at files that changed, so a rescan takes seconds.
+- **Delete on a network drive goes to quarantine.** Windows has no Recycle
+  Bin for a mapped drive or a network share, so deleting there would be
+  permanent. Files on a network drive are moved to the quarantine folder
+  instead, and the Delete confirmation says so before you click.
 - **Delete (Recycle Bin) and Show in folder are Windows only.** They use the
   Windows Recycle Bin and File Explorer. Everything else - scanning, search,
   duplicates, tags, renaming, quarantine, Excel, Open in slicer - works on
@@ -328,7 +335,11 @@ If you don't use the Hub, leave `token` empty and ignore the button.
   silently skipped.
 - **Nothing is ever hard-deleted.** Renames are reversible from the History
   tab, duplicate cleanup moves files to quarantine, and Delete uses the
-  Recycle Bin.
+  Recycle Bin, or quarantine on a network drive. No move ever replaces a
+  file that is already at the destination.
+- **Scan problems show on the page.** A file that could not be read or a
+  folder that could not be opened during a scan is counted in the status line,
+  with the first few reasons, instead of only in the console.
 
 ## Command-line helpers (running from source)
 
