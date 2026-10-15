@@ -397,7 +397,7 @@ function buildFacets() {
       toast(r.to ? `"${r.from}" merged into "${r.to}"` : `"${r.from}" removed`);
       S.filters.tag.delete(tag);
       await load();
-    } catch (e) { toast(e.message, true); }
+    } catch (e) { toast(errText(e), true); }
   });
   facet('Type', 'ext', r => r.ext);
   facet('Designer', 'designer', r => r.designer);
@@ -476,7 +476,9 @@ async function renderHistory() {
         const u = el('button', 'btn danger', 'Undo this batch');
         u.style.marginLeft = 'auto';
         u.onclick = async () => {
-          const r = await api(undoUrl, { batch: b.batch });
+          let r;
+          try { r = await api(undoUrl, { batch: b.batch }); }
+          catch (e) { return toast(errText(e), true); }   // E8: e.g. "an archive run is going - try again"
           alert(`Reverted ${r.reverted}.` + (r.errors.length ? `\n${r.errors.length} failed.` : ''));
           await load(); renderHistory();
         };
@@ -684,8 +686,10 @@ async function previewRename() {
   const ids = [...S.sel];
   if (!ids.length) return alert('Select some files first.');
   const req = { ids, pattern: $('#pattern').value };
-  showPlan(await api('/api/rename/plan', req), 'Pattern');
-  S.planReq = req; // apply sends this back; the server rebuilds the plan
+  try {                                              // E8 (1.7.0): a server error shows, the button stays alive
+    showPlan(await api('/api/rename/plan', req), 'Pattern');
+    S.planReq = req; // apply sends this back; the server rebuilds the plan
+  } catch (e) { toast(errText(e), true); }
 }
 
 async function previewTitles() {
@@ -694,7 +698,7 @@ async function previewTitles() {
   try {
     showPlan(await api('/api/rename/plan-titles', { ids }), 'Titles → filenames');
     S.planReq = { ids, titles: true };
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { toast(errText(e), true); }
 }
 
 async function applyRename() {
@@ -703,7 +707,9 @@ async function applyRename() {
   if (!changing.length) return alert('Nothing to do.');
   if (!confirm(`Rename ${changing.length} files?\n\nThis is undoable from the History tab.`)) return;
   const expect = Object.fromEntries(S.plan.map(x => [x.id, x.to]));
-  const r = await api('/api/rename/apply', { ...S.planReq, expect });
+  let r;
+  try { r = await api('/api/rename/apply', { ...S.planReq, expect }); }
+  catch (e) { return toast(errText(e), true); }    // E8: nothing moved; the plan stays on screen to retry
   alert(`Renamed ${r.renamed} files.` + (r.errors.length
     ? `\n${r.errors.length} failed:\n` + r.errors.slice(0, 5).map(e => `${String(e.from || '').split(/[\\/]/).pop()} - ${e.error}`).join('\n')
     : ''));
@@ -761,7 +767,7 @@ async function previewCleanTitles() {
   const words = ($('#cleanwords').value || '').split(',').map(s => s.trim()).filter(Boolean);
   try {
     showTitlePlan(await api('/api/titles/clean-plan', { ids, words }));
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { toast(errText(e), true); }
 }
 
 async function applyCleanTitles() {
@@ -792,6 +798,15 @@ async function rescan() {
       clearInterval(tick);
       $('#rescan').disabled = false;
       await load();
+      // E7 (1.7.0): a scan that hit trouble says so here, not only in the
+      // service log. failed = files that could not be read or parsed;
+      // pruneSkipped = roots that were unreachable, whose rows were kept.
+      const notes = [];
+      if (s.failed) notes.push(`${s.failed} file${s.failed === 1 ? '' : 's'} could not be read` +
+        (s.errors && s.errors.length ? ': ' + s.errors.slice(0, 3).map(e => `${String(e.file || '').split(/[\\/]/).pop()} (${e.error})`).join('; ') + (s.errors.length > 3 ? ', …' : '') : ''));
+      if (s.pruneSkipped && s.pruneSkipped.length) notes.push(`${s.pruneSkipped.length} folder${s.pruneSkipped.length === 1 ? '' : 's'} unreachable, rows kept: ` +
+        s.pruneSkipped.map(x => x.root).join(', '));
+      if (notes.length) toast('Scan finished with problems - ' + notes.join(' · '), true);
     }
   }, 700);
 }
@@ -819,8 +834,9 @@ async function load() {
 
   S.rows = rows;
   S.nArchived = rows.filter(r => r.archived).length;
-  S.dupes = dupes;
   S.byId = new Map(rows.map(r => [r.id, r]));
+  // E6 (1.7.0): the server sends each dupe group as ids; the rows are here already.
+  S.dupes = dupes.map(g => ({ ...g, files: (g.ids || []).map(id => S.byId.get(id)).filter(Boolean) })).filter(g => g.files.length > 1);
   S.sel = new Set([...S.sel].filter(id => S.byId.has(id)));
 
   $('#stat').textContent =
@@ -924,7 +940,9 @@ function wire() {
     if (!ids.length) return alert('Select some files first.');
     if (!confirm(`Move ${ids.length} files to the quarantine folder?\n\n` +
                  `Nothing is deleted - they are moved so you can check before removing them.`)) return;
-    const r = await api('/api/os/quarantine', { ids });
+    let r;
+    try { r = await api('/api/os/quarantine', { ids }); }
+    catch (e) { return toast(errText(e), true); }    // E8
     alert(`Moved ${r.moved} files to\n${r.dest}` + (r.errors.length ? `\n\n${r.errors.length} failed.` : ''));
     S.sel.clear();
     await load();
@@ -940,7 +958,7 @@ function wire() {
     if (!ids.length) return alert('Select some files first.');
     let r;
     try { r = await api('/api/print-request', { ids }); }
-    catch (e) { return toast(e.message, true); }
+    catch (e) { return toast(errText(e), true); }
     for (const id of ids) {
       const row = S.byId.get(id);
       if (row && !row.tags.includes('for-print')) { row.tags.push('for-print'); row._s += ' for-print'; }
@@ -1013,7 +1031,7 @@ async function openIn(row, appName) {
   try {
     const r = await api('/api/os/open', { path: row.path, app: appName });
     toast('Opening in ' + r.app);
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { toast(errText(e), true); }
 }
 
 // ---- delete to recycle bin ---------------------------------------------
@@ -1041,7 +1059,7 @@ async function recycle(ids) {
     S.sel.clear();
     await load();
     if (S.tab === 'dupes') renderDupes();
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { toast(errText(e), true); }
 }
 
 // ---- archive ------------------------------------------------------------
@@ -1100,7 +1118,7 @@ function renameInline(rowIndex) {
       const r = await api('/api/os/renameOne', { id: row.id, name: val });
       if (r.name) { row.name = r.name; row.path = r.path; toast('Renamed to ' + r.name); }
       recompute(); renderDetail();
-    } catch (e) { toast(e.message, true); renderTable(); }
+    } catch (e) { toast(errText(e), true); renderTable(); }
   };
   inp.onkeydown = e => {
     e.stopPropagation();
@@ -1301,7 +1319,7 @@ function editCell(rowIndex, field) {
       toast(`${isTags ? 'tags' : field} set on ${r.updated} file${r.updated === 1 ? '' : 's'}`);
       if (isTags) refreshTags();
       buildFacets(); recompute(); renderDetail();
-    } catch (e) { toast(e.message, true); renderTable(); }
+    } catch (e) { toast(errText(e), true); renderTable(); }
   };
   inp.onkeydown = e => {
     e.stopPropagation();

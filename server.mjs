@@ -5,6 +5,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn, spawnSync, execFile } from 'node:child_process';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { openDb, getMeta, setMeta } from './lib/db.mjs';
 import { scan, longPath, EXTS, normExts } from './lib/scan.mjs';
@@ -78,9 +79,23 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
   '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml',
   '.json': 'application/json; charset=utf-8' };
 
-const send = (res, code, body, type = 'application/json; charset=utf-8') => {
-  const b = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
-  res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' });
+// E6 (1.7.0): anything over 8 KB goes out gzipped when the client accepts it.
+// /api/rows for a 4,000-file library is several MB of JSON over the tunnel
+// on every load; gzip takes it to a tenth. Images and small answers are
+// sent as they are. The request is passed in through `send.req` by the
+// server loop (one place), so every route gets it for free.
+const GZIP_MIN = 8192;
+const send = (res, code, body, type = 'application/json; charset=utf-8', req = null) => {
+  let b = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
+  const headers = { 'content-type': type, 'cache-control': 'no-store' };
+  const ae = String((req || send.req || {}).headers?.['accept-encoding'] || '');
+  const compressible = /json|text|javascript|svg/.test(type) && !/image\/png/.test(type);
+  if (compressible && /\bgzip\b/.test(ae) && Buffer.byteLength(b) >= GZIP_MIN) {
+    b = zlib.gzipSync(b);
+    headers['content-encoding'] = 'gzip';
+    headers.vary = 'accept-encoding';
+  }
+  res.writeHead(code, headers);
   res.end(b);
 };
 
@@ -597,11 +612,24 @@ const routes = {
       // case so a filled Title always means something you or the file chose.
       const stem = r.name.replace(/\.[^.]*$/, '');
       if (r.title && r.title.toLowerCase() === stem.toLowerCase()) r.title = '';
+      // E6: the list carries the first 400 characters of a description (all
+      // the page ever shows); /api/row?id= has the whole thing.
+      if (r.description && r.description.length > 400) r.description = r.description.slice(0, 400);
     }
     return rows;
   },
+  'GET /api/row': (body, url) => {
+    const id = Number(url && url.searchParams.get('id'));
+    const r = db.prepare(`${ROW_SELECT} WHERE f.id=?`).get(id);
+    if (!r) throw new Error('no such row');
+    r.tags = r.tagstr ? r.tagstr.split(', ').filter(Boolean) : []; delete r.tagstr;
+    return r;
+  },
 
-  'GET /api/dupes': () => dupeGroups(),
+  // E6: the page already holds every row, so a group is its ids, not its
+  // rows again (this used to re-send full rows for every group, one query
+  // per group).
+  'GET /api/dupes': () => dupeGroups().map(g => ({ kind: g.kind, key: g.key, count: g.count, wasted: g.wasted, ids: g.files.map(f => f.id) })),
   'GET /api/scan/status': () => scanState,
   'POST /api/scan': () => { startScan(); return { started: true }; },
 
@@ -862,11 +890,20 @@ async function osAction(name, body) {
       fs.writeFileSync(tmp, fs.readFileSync(script));
       script = tmp;
     }
-    const r = spawnSync('powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-       script, '-ListFile', listFile],
-      { encoding: 'utf8', windowsHide: true });
-    const out = (r.stdout || '') + (r.stderr || '');
+    // E10 (1.7.0): the recycle step no longer blocks the event loop while
+    // PowerShell runs (it used to be spawnSync; a slow network delete froze
+    // every other request, the scan status poll included).
+    const out = await new Promise(resolve => {
+      let o = '';
+      let ch;
+      try {
+        ch = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-ListFile', listFile], { windowsHide: true });
+      } catch (e) { return resolve('could not start powershell: ' + e.message); }
+      ch.stdout.on('data', d => { o += d; });
+      ch.stderr.on('data', d => { o += d; });
+      ch.on('error', e => resolve(o + '\n' + e.message));
+      ch.on('close', () => resolve(o));
+    });
     const del = db.prepare('DELETE FROM files WHERE path=?');
     let gone = 0;
     for (const p of paths) if (!fs.existsSync(longPath(p))) { del.run(p); gone++; logAction('recycle', p); }
@@ -927,6 +964,7 @@ function quarantineIds(idList) {
 }
 
 const server = http.createServer(async (req, res) => {
+  send.req = req;                                  // E6: lets send() see accept-encoding
   try {
     const url = new URL(req.url, 'http://localhost');
     const key = req.method + ' ' + url.pathname;
@@ -1017,7 +1055,7 @@ const server = http.createServer(async (req, res) => {
 
     if (routes[key]) {
       const body = req.method === 'POST' ? await readBody(req) : null;
-      return send(res, 200, await routes[key](body));
+      return send(res, 200, await routes[key](body, url));
     }
 
     // static
