@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.0 - lighter pages, a scan that says what went wrong, actions that fail safely
+
+- Every JSON response of 8 KB or more is gzipped when the browser accepts it (every browser does), and the file list no longer carries each file's full description: it is cut at 400 characters and the detail panel fetches the whole text from the new `GET /api/row?id=` route. On a 10,000-file library the first load went from several megabytes to a few hundred kilobytes. Duplicate groups are now sent as ids (`{kind, key, count, wasted, ids}`) and the page resolves them from the rows it already has, instead of receiving every duplicate row a second time.
+- A scan that finishes with problems now says so on the page: files that could not be read are counted, and a library folder whose prune was skipped because it was unreachable is named, with the note that its rows were kept. Before, both only reached the service log.
+- Preview rename, apply rename, History undo and quarantine catch a server error and show its message in the toast instead of leaving the page half-updated. Every toast that printed a raw `e.message` now unwraps the server's `{error}` body, so an HTTP 500 reads as the reason, not "Unexpected token".
+- The scan stats files 16 at a time and writes its index rows in transactions of 500 instead of one autocommit per file, and `renames(new_path)` has an index, so History undo and the "already renamed" check stop doing table scans. Sending a file to the Recycle Bin runs PowerShell asynchronously; the server no longer freezes for the duration of the call.
+- New tests in `test/sprint3.test.mjs` cover each of these (9 tests, 4 of them against the real server on a throwaway folder). The archive test cleanup now works on Linux too.
+
 ## 1.6.1 - nothing moves over another file, network drives, cross-site requests
 
 - Delete on a network drive (a mapped drive such as X: or a `\\server\share` path) now moves the file to the quarantine folder instead. Windows has no Recycle Bin for network locations, so "send to the Recycle Bin" there was a permanent delete. The Delete confirmation says so when any selected file is on a network drive, and the result says how many files went to quarantine. If the app can't ask Windows which drives are network drives, it quarantines rather than guess. The Excel import's Delete column follows the same rule.
