@@ -13,7 +13,7 @@ import * as ren from './lib/rename.mjs';
 import * as ct from './lib/cleanTitle.mjs';
 import * as xl from './lib/xlsx.mjs';
 import { makeProtector, normProtected, BUILTIN_PROTECTED } from './lib/protect.mjs';
-import { archiveDir, archiveTarget, restoreTarget, moveFile, pruneEmpty, isUnder, readHubPrints, hubLinkStats, eligible } from './lib/archive.mjs';
+import { archiveDir, archiveTarget, restoreTarget, moveFile, renameOrCopy, pruneEmpty, isUnder, readHubPrints, hubLinkStats, eligible } from './lib/archive.mjs';
 import { postGuard } from './lib/guard.mjs';
 import { networkLetters, isNetworkPath } from './lib/drives.mjs';
 import { loadConfig, readConfigFile } from './lib/config.mjs';
@@ -441,7 +441,7 @@ async function moveRows(rows, { prefix, target, stopAt, action }) {
         if (isProtected(r.path)) throw new Error(PROTECTED_MSG);
         const to = target(r);
         if (isProtected(to)) throw new Error('the destination is ' + PROTECTED_MSG);
-        moveFile(r.path, to, stopAt(r), isProtected);
+        moveFile(r.path, to, stopAt(r), isProtected, m => console.log('  ' + m));
         const root = rootOf(to) || r.root || '';
         upd.run(to, path.basename(to), root, root ? path.relative(root, to) : '',
                 path.basename(path.dirname(to)), r.id);
@@ -773,6 +773,13 @@ const routes = {
   'POST /api/rename/undo': (body) => {
     if (archiveState.running) throw new Error('An archive run is going - try again in a moment.');
     const r = ren.undo(db, body.batch, isProtected);
+    // E11 (1.7.1): a quarantined file has no index row any more. Once it is
+    // back in the library a rescan re-adds it (its tags and edits are keyed
+    // by sha256, so they return with it).
+    if (/^quarantine-/.test(String(body.batch || '')) && r.reverted) {
+      for (const x of db.prepare('SELECT old_path FROM renames WHERE batch=? AND undone=1').all(body.batch)) logAction('unquarantine', x.old_path);
+      if (!scanState.running) { startScan(); r.rescan = true; }
+    }
     // Undoing an archive run puts files back on the shelf on purpose - give
     // them a fresh year so next month's run doesn't sweep them straight back.
     if (/^(auto-)?archive-/.test(String(body.batch || ''))) {
@@ -946,28 +953,42 @@ async function osAction(name, body) {
 }
 
 // Move indexed files into the quarantine folder (never over an existing file).
+// E11 (1.7.1): every move is recorded in `renames` under a quarantine-<date>
+// batch, so History lists it and undo moves the file back. The renames table
+// has no "kind" column; the batch prefix is the kind, as archive-/unarchive-
+// already do. The files row is dropped (quarantine is outside the library,
+// so a kept row would be pruned by the next scan anyway); undo puts the file
+// back and starts a rescan, which re-adds the row. Tags, titles and designers
+// are keyed by sha256, so they come back with it.
+// E16: the move survives a quarantine folder on another drive (copy, verify,
+// then unlink - see renameOrCopy).
 function quarantineIds(idList) {
-  {
-    const dest = cfg.quarantine || path.join(DATA, '_quarantine');
-    fs.mkdirSync(longPath(dest), { recursive: true });
-    const get = db.prepare('SELECT path,name FROM files WHERE id=?');
-    const del = db.prepare('DELETE FROM files WHERE id=?');
-    let moved = 0; const errors = [];
-    for (const id of idList) {
-      const r = get.get(id);
-      if (!r) continue;
-      if (isProtected(r.path)) { errors.push({ path: r.path, error: PROTECTED_MSG }); logAction('quarantine-refused-protected', r.path); continue; }
-      let target = path.join(dest, r.name);
-      let n = 2;
-      while (fs.existsSync(longPath(target))) {
-        const e = path.extname(r.name);
-        target = path.join(dest, `${path.basename(r.name, e)} (${n++})${e}`);
-      }
-      try { fs.renameSync(longPath(r.path), longPath(target)); del.run(id); moved++; logAction('quarantine', r.path, target); }
-      catch (e) { errors.push({ path: r.path, error: String(e.message || e) }); }
+  const dest = cfg.quarantine || path.join(DATA, '_quarantine');
+  fs.mkdirSync(longPath(dest), { recursive: true });
+  const get = db.prepare('SELECT path,name FROM files WHERE id=?');
+  const del = db.prepare('DELETE FROM files WHERE id=?');
+  const ins = db.prepare('INSERT INTO renames(batch,ts,old_path,new_path,undone) VALUES(?,?,?,?,0)');
+  const batch = batchName('quarantine');
+  let moved = 0; const errors = [];
+  for (const id of idList) {
+    const r = get.get(id);
+    if (!r) continue;
+    if (isProtected(r.path)) { errors.push({ path: r.path, error: PROTECTED_MSG }); logAction('quarantine-refused-protected', r.path); continue; }
+    let target = path.join(dest, r.name);
+    let n = 2;
+    while (fs.existsSync(longPath(target))) {
+      const e = path.extname(r.name);
+      target = path.join(dest, `${path.basename(r.name, e)} (${n++})${e}`);
     }
-    return { moved, dest, errors };
+    try {
+      const how = renameOrCopy(r.path, target, { log: m => console.log('  ' + m) });
+      del.run(id);
+      ins.run(batch, Date.now(), r.path, target);
+      moved++;
+      logAction('quarantine', r.path, target + (how === 'copy' ? '\tcopied across drives' : ''));
+    } catch (e) { errors.push({ path: r.path, error: String(e.message || e) }); }
   }
+  return { moved, dest, errors, batch: moved ? batch : null };
 }
 
 const server = http.createServer(async (req, res) => {

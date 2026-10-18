@@ -479,7 +479,8 @@ async function renderHistory() {
           let r;
           try { r = await api(undoUrl, { batch: b.batch }); }
           catch (e) { return toast(errText(e), true); }   // E8: e.g. "an archive run is going - try again"
-          alert(`Reverted ${r.reverted}.` + (r.errors.length ? `\n${r.errors.length} failed.` : ''));
+          alert(`Reverted ${r.reverted}.` + (r.errors.length ? `\n${r.errors.length} failed.` : '') +
+            (r.rescan ? '\nThe files are back in the library; a rescan has started to list them again.' : ''));   // E11
           await load(); renderHistory();
         };
         hd.append(u);
@@ -939,7 +940,7 @@ function wire() {
     const ids = [...S.sel];
     if (!ids.length) return alert('Select some files first.');
     if (!confirm(`Move ${ids.length} files to the quarantine folder?\n\n` +
-                 `Nothing is deleted - they are moved so you can check before removing them.`)) return;
+                 `Nothing is deleted - they are moved so you can check before removing them. Undoable from the History tab.`)) return;
     let r;
     try { r = await api('/api/os/quarantine', { ids }); }
     catch (e) { return toast(errText(e), true); }    // E8
