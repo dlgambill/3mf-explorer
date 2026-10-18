@@ -1,0 +1,31 @@
+# F10 (1.7.1): every push, pull request and tag runs the test suite on
+# Windows and Ubuntu with Node 22 (node:sqlite needs 22.13 or newer). A tag
+# build also checks that the tag, package.json and the CHANGELOG's first
+# heading name the same version, so a release can't ship mislabeled.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node --test
+      - name: Tag matches package.json and CHANGELOG
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/check-version.mjs "${{ github.ref_name }}"
