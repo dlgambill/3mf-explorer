@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.1 - undoable quarantine, settings that save, config checks, backups, CI
+
+- `config.json` is checked when it is read. A value of the wrong type (`"port": "7333"`, `"roots": "D:\\Models"`) stops startup with the key name and the type it should be; a key the app does not know is a warning in the log, not a failure; a relative path (`"quarantine": "_quarantine"`) is resolved against the data folder. A UTF-8 byte order mark at the start of the file, which PowerShell 5's `Set-Content -Encoding UTF8` writes, is stripped with a warning instead of crashing the service as it did in 1.7.0.
+- `GET /healthz` answers `{ok, version, dbOk}` with 200 when the database answers a `SELECT 1` and 503 when it does not, for a service monitor. A nightly backup writes `library-YYYY-MM-DD.db` (a `VACUUM INTO` snapshot, safe while the server runs) and a copy of `config.json` into `backups/` under the data folder at 03:00 local time, and once at startup when today has none; the newest 7 are kept. `backupDir` in `config.json` moves the folder; it never defaults to the library share.
+
 ## 1.7.0 - lighter pages, a scan that says what went wrong, actions that fail safely
 
 - Every JSON response of 8 KB or more is gzipped when the browser accepts it (every browser does), and the file list no longer carries each file's full description: it is cut at 400 characters and the detail panel fetches the whole text from the new `GET /api/row?id=` route. On a 10,000-file library the first load went from several megabytes to a few hundred kilobytes. Duplicate groups are now sent as ids (`{kind, key, count, wasted, ids}`) and the page resolves them from the rows it already has, instead of receiving every duplicate row a second time.

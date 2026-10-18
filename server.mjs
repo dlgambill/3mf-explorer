@@ -16,6 +16,9 @@ import { makeProtector, normProtected, BUILTIN_PROTECTED } from './lib/protect.m
 import { archiveDir, archiveTarget, restoreTarget, moveFile, pruneEmpty, isUnder, readHubPrints, hubLinkStats, eligible } from './lib/archive.mjs';
 import { postGuard } from './lib/guard.mjs';
 import { networkLetters, isNetworkPath } from './lib/drives.mjs';
+import { loadConfig, readConfigFile } from './lib/config.mjs';
+import pkg from './package.json' with { type: 'json' };
+import { scheduleBackups } from './lib/backup.mjs';
 
 // HERE is where the app's own files are (public/, recycle.ps1). DATA is where
 // config.json, library.db and .thumb-cache live: next to server.mjs when run
@@ -41,7 +44,11 @@ if (!fs.existsSync(CFG_PATH)) {
   fs.writeFileSync(CFG_PATH, text, 'utf8');
   console.log('  Created ' + CFG_PATH + ' - add your model folders to "roots" there, then restart.');
 }
-const cfg = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
+// F8 (1.7.1): checked on the way in (see lib/config.mjs). A wrong type is a
+// clear message and exit code 1; an unknown key or a BOM is only a warning.
+let cfg;
+try { cfg = loadConfig(CFG_PATH, { dataDir: DATA }); }
+catch (e) { console.error('  ' + e.message + '\n  Fix ' + CFG_PATH + ' and start again.'); process.exit(1); }
 cfg.roots = Array.isArray(cfg.roots) ? cfg.roots : [];
 // Rebuilt whenever Settings saves the list. See lib/protect.mjs.
 let isProtected = makeProtector(cfg.protected);
@@ -272,7 +279,7 @@ function saveSettings(body) {
     prot = normProtected(body.protected);
   }
 
-  const onDisk = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
+  const onDisk = readConfigFile(CFG_PATH).raw;   // F8: BOM-tolerant, paths left as written
   onDisk.roots = roots;
   onDisk.fileTypes = fileTypes;
   onDisk.protected = prot;
@@ -976,6 +983,14 @@ const server = http.createServer(async (req, res) => {
       if (why) { req.resume(); return send(res, 403, { error: why }); }
     }
 
+    // F9 (1.7.1): for a service monitor. 200 when the database answers a
+    // SELECT 1, 503 when it does not. Cheap on purpose - no file reads.
+    if (req.method === 'GET' && url.pathname === '/healthz') {
+      let dbOk = false;
+      try { dbOk = db.prepare('SELECT 1 AS one').get()?.one === 1; } catch {}
+      return send(res, dbOk ? 200 : 503, { ok: dbOk, version: pkg.version, dbOk });
+    }
+
     // cached thumbnails
     if (url.pathname.startsWith('/thumb/')) {
       const name = path.basename(url.pathname.slice(7));
@@ -1094,3 +1109,9 @@ server.listen(PORT, '127.0.0.1', () => {
 const autoTick = () => runAutoArchive().catch(e => console.error('  auto-archive failed:', e.message));
 setTimeout(autoTick, 2 * 60 * 1000);
 setInterval(autoTick, 6 * 60 * 60 * 1000);
+
+// F9 (1.7.1): nightly backup of library.db and config.json into backups/
+// under the data folder (or cfg.backupDir), newest 7 kept. Runs once at
+// startup when today has none yet, then at 03:00 local time. See lib/backup.mjs.
+scheduleBackups({ db, dataDir: DATA, cfgPath: CFG_PATH, backupDir: cfg.backupDir || '' },
+  { log: m => console.log('  ' + m) });
