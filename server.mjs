@@ -210,15 +210,22 @@ function reconcileRoots(roots = cfg.roots, types = normExts(cfg.fileTypes)) {
 // config.json.bak, and replaced atomically via a temp file + rename.
 function saveSettings(body) {
   if (scanState.running) throw new Error('A scan is running - try again when it finishes.');
-  const isAbs = p => path.isAbsolute(p) && !/^[\\/](?![\\/])/.test(p); // "\foo" has no drive
+  // "\foo" is absolute to Node on Windows but has no drive, so it is refused
+  // there. On Mac and Linux every absolute path starts with "/" (1.7.1: the
+  // check used to reject those too, so Settings could not be saved off Windows).
+  const isAbs = p => path.isAbsolute(p) && (process.platform !== 'win32' || !/^[\\/](?![\\/])/.test(p));
   const isDir = p => { try { return fs.statSync(longPath(p)).isDirectory(); } catch { return false; } };
 
+  // E12 (1.7.1): warnings ride along in the response instead of refusing
+  // the save - a library folder on a NAS that is off right now is still the
+  // right setting. The page shows them in place of a bare "Saved".
+  const warnings = [];
   const raw = Array.isArray(body?.roots) ? body.roots : [];
   const roots = [];
   for (const r of raw.map(x => String(x).trim()).filter(Boolean)) {
     if (!isAbs(r)) throw new Error(`"${r}" isn't a full path - use something like D:\\3D Models`);
-    if (!isDir(r)) throw new Error(`Can't find the folder "${r}"`);
     const abs = path.resolve(r);
+    if (!isDir(r)) warnings.push(`Can't reach "${abs}" right now - saved anyway. Its files stay listed until a scan can read it.`);
     if (!roots.some(x => rootKey(x) === rootKey(abs))) roots.push(abs);
   }
   if (!roots.length) throw new Error('Add at least one library folder.');
@@ -255,7 +262,10 @@ function saveSettings(body) {
   if (body?.autoArchive && typeof body.autoArchive === 'object') {
     const days = Math.round(Number(body.autoArchive.days ?? autoArchive.days));
     if (!(days >= 30 && days <= 3650)) throw new Error('Archive after: pick between 30 and 3650 days.');
-    autoArchive = { ...autoArchive, enabled: !!body.autoArchive.enabled, days };
+    // E12: how often the automatic run looks (left out by an older page = keep)
+    const everyDays = Math.round(Number(body.autoArchive.everyDays ?? autoArchive.everyDays));
+    if (!(everyDays >= 1 && everyDays <= 365)) throw new Error('Archive every: pick between 1 and 365 days.');
+    autoArchive = { ...autoArchive, enabled: !!body.autoArchive.enabled, days, everyDays };
   }
 
   // File types: a subset of what the parsers read. Left out of the request
@@ -270,15 +280,30 @@ function saveSettings(body) {
   }
 
   // Protected files: left out of the request means keep the current list.
+  // E12: an entry that normalization folds into another one (a repeat, or
+  // the same path spelled differently) is reported back, not silently lost.
   let prot = normProtected(cfg.protected);
+  const droppedProtected = [];
   if (Array.isArray(body?.protected)) {
-    for (const s of body.protected.map(x => String(x).trim()).filter(Boolean)) {
+    const asked = body.protected.map(x => String(x).trim()).filter(Boolean);
+    for (const s of asked) {
       if (/[\\/]/.test(s) && !isAbs(s))
         throw new Error(`Protected "${s}" - use a full path (D:\\Models\\tool) or just a file name (template*.3mf)`);
     }
     prot = normProtected(body.protected);
+    const seen = new Set();
+    for (const s of asked) {
+      const [k] = normProtected([s]);
+      const key = k.toLowerCase();
+      if (seen.has(key)) droppedProtected.push(`"${s}" is already listed as "${k}"`);
+      seen.add(key);
+    }
+    if (droppedProtected.length) warnings.push(`Dropped ${droppedProtected.length} repeated protected entr${droppedProtected.length === 1 ? 'y' : 'ies'}: ${droppedProtected.join('; ')}`);
   }
 
+  const beforeRoots = (cfg.roots || []).map(x => path.resolve(x));
+  const beforeTypes = [...normExts(cfg.fileTypes)];
+  const beforeProt = normProtected(cfg.protected);
   const onDisk = readConfigFile(CFG_PATH).raw;   // F8: BOM-tolerant, paths left as written
   onDisk.roots = roots;
   onDisk.fileTypes = fileTypes;
@@ -299,9 +324,17 @@ function saveSettings(body) {
   cfg.quarantine = quarantine;
   if (archive) cfg.archive = archive; else delete cfg.archive;
   cfg.autoArchive = autoArchive;
-  const r = reconcileRoots(roots, new Set(fileTypes));
-  startScan();
-  return { ok: true, roots, fileTypes, protected: prot, quarantine, archive, autoArchive, ...r };
+  // E12: only a change to the library folders or file types moves rows in
+  // or out of the index, so only that triggers the reconcile and the rescan.
+  // Saving a new archive interval or quarantine folder is just a save.
+  // A changed protected list only reconciles (index rows for newly protected
+  // files leave the list at once, nothing on disk is read).
+  const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  const rescan = !sameList(roots, beforeRoots) || !sameList(fileTypes, beforeTypes);
+  let r = { removed: 0, repointed: 0 };
+  if (rescan || !sameList(prot, beforeProt)) r = reconcileRoots(roots, new Set(fileTypes));
+  if (rescan) startScan();
+  return { ok: true, roots, fileTypes, protected: prot, quarantine, archive, autoArchive, ...r, rescan, warnings, droppedProtected };
 }
 
 async function startScan() {

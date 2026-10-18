@@ -59,6 +59,20 @@ test('E16: quarantine, moveFile and undo all go through renameOrCopy', () => {
   assert.match(read('lib/rename.mjs'), /renameOrCopy\(r\.new_path, r\.old_path\)/);
 });
 
+// ---- E14: debounce + search column ----
+test('E14: the search box is debounced 150 ms, Enter applies at once, and the search column is no longer written', () => {
+  const app = read('public/app.js');
+  assert.match(app, /qTimer = setTimeout\(\(\) => applyQuery\(e\.target\.value\), 150\)/);
+  assert.match(app, /if \(e\.key === 'Enter'\) applyQuery\(e\.target\.value\)/);
+  assert.doesNotMatch(app, /oninput = e => \{ S\.q = e\.target\.value; recompute\(\); \}/);
+  const scan = read('lib/scan.mjs');
+  assert.doesNotMatch(scan, /'indexed_at','search'\]/);
+  assert.doesNotMatch(scan, /row\.search =/);
+  const db = read('lib/db.mjs');
+  assert.doesNotMatch(db, /search=\?/);
+  assert.match(db, /search    TEXT/, 'the column stays so old databases open');
+});
+
 // ---- routes: E11 and E12 against the real server on a throwaway folder ----
 const lib = path.join(tmp, 'lib');
 const lib2 = path.join(tmp, 'lib2');
@@ -122,4 +136,52 @@ test('E11 route: quarantine is a History batch and undo puts the file back', asy
   assert.equal((await get('/api/rename/batches')).json.find(x => x.batch === q.json.batch).undone, 1);
   const log = fs.readFileSync(path.join(tmp, '_actions-log.txt'), 'utf8');
   assert.match(log, /\tquarantine\t/); assert.match(log, /\tunquarantine\t/);
+});
+
+test('E12 route: everyDays saves; an unchanged folder list does not rescan', async () => {
+  const s0 = (await get('/api/settings')).json;
+  assert.equal(s0.autoArchive.everyDays, 30);
+  const before = (await get('/api/scan/status')).json.finishedAt;
+  const r = await post('/api/settings', { roots: s0.roots, fileTypes: s0.fileTypes, protected: s0.protected, quarantine: s0.quarantine,
+    autoArchive: { enabled: false, days: 365, everyDays: 14 } });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(r.json.rescan, false);
+  assert.deepEqual(r.json.warnings, []);
+  assert.equal((await get('/api/settings')).json.autoArchive.everyDays, 14);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(tmp, 'config.json'), 'utf8')).autoArchive.everyDays, 14);
+  await new Promise(x => setTimeout(x, 300));
+  assert.equal((await get('/api/scan/status')).json.finishedAt, before, 'no scan was started');
+  const bad = await post('/api/settings', { roots: s0.roots, autoArchive: { enabled: false, days: 365, everyDays: 0 } });
+  assert.equal(bad.status, 500); assert.match(bad.json.error, /Archive every/);
+});
+test('E12 route: a repeated protected entry is reported, not silently dropped', async () => {
+  const s0 = (await get('/api/settings')).json;
+  const r = await post('/api/settings', { roots: s0.roots, protected: ['template*.3mf', 'TEMPLATE*.3mf', path.join(lib, 'tool'), path.join(lib, 'tool') + path.sep] });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.deepEqual(r.json.protected, ['template*.3mf', path.join(lib, 'tool')]);
+  assert.equal(r.json.droppedProtected.length, 2);
+  assert.match(r.json.warnings[0], /Dropped 2 repeated protected entries/);
+  assert.equal(r.json.rescan, false);
+});
+test('E12 route: a library folder that cannot be reached saves with a warning, and a changed list rescans', async () => {
+  const s0 = (await get('/api/settings')).json;
+  const missing = path.join(tmp, 'nas-offline');
+  const r = await post('/api/settings', { roots: [...s0.roots, lib2, missing] });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.deepEqual(r.json.roots, [lib, lib2, missing]);
+  assert.equal(r.json.warnings.length, 1);
+  assert.match(r.json.warnings[0], /Can't reach .*nas-offline.* right now - saved anyway/);
+  assert.equal(r.json.rescan, true, 'the folder list changed');
+  const st = await waitScan();
+  assert.equal(st.pruneSkipped.length, 1, 'the missing folder is skipped for pruning, nothing dropped');
+  assert.equal((await get('/api/rows')).json.length, 2);
+  const stillBad = await post('/api/settings', { roots: ['not-a-full-path'] });
+  assert.equal(stillBad.status, 500); assert.match(stillBad.json.error, /full path/);
+});
+test('E12: the Settings page has an interval field and shows the server warnings', () => {
+  const app = read('public/app.js');
+  assert.match(app, /every\.value = aa\.everyDays/);
+  assert.match(app, /everyDays: Number\(every\.value\)/);
+  assert.match(app, /for \(const w of r\.warnings \|\| \[\]\) notes\.push\(w\)/);
+  assert.match(app, /if \(r\.rescan\) rescan\(\)/);
 });

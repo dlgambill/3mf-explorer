@@ -569,7 +569,9 @@ async function renderSettings() {
   const autoLab = el('label', 'inline');
   const autoOn = el('input'); autoOn.type = 'checkbox'; autoOn.checked = !!aa.enabled;
   const days = el('input', 'days'); days.type = 'number'; days.min = 30; days.max = 3650; days.value = aa.days;
-  autoLab.append(autoOn, document.createTextNode(` Every ${aa.everyDays} days, archive files not printed in `),
+  // E12 (1.7.1): the interval is a field too, not a fixed 30
+  const every = el('input', 'days'); every.type = 'number'; every.min = 1; every.max = 365; every.value = aa.everyDays;
+  autoLab.append(autoOn, document.createTextNode(' Every '), every, document.createTextNode(' days, archive files not printed in '),
     days, document.createTextNode(' days'));
   const archStat = el('div', 'hint', 'Checking…');
   const runNow = el('button', 'btn hidden', 'Archive them now');
@@ -614,13 +616,16 @@ async function renderSettings() {
         droppedProt.join('\n') + '\n\nThis app could then delete, move or rename those files.')) return;
       const r = await api('/api/settings', { roots: roots.value.split(/\r?\n/), fileTypes,
         protected: prot.value.split(/\r?\n/), quarantine: quar.value,
-        archive: archDir.value, autoArchive: { enabled: autoOn.checked, days: Number(days.value) } });
-      toast(r.removed
-        ? `Saved - ${r.removed.toLocaleString()} files no longer match and left the list`
-        : 'Saved');
+        archive: archDir.value, autoArchive: { enabled: autoOn.checked, days: Number(days.value), everyDays: Number(every.value) } });
+      // E12: the server says what it could not do exactly as asked (a folder
+      // it cannot reach, a repeated protected entry) - show that, not "Saved".
+      const notes = [];
+      if (r.removed) notes.push(`${r.removed.toLocaleString()} files no longer match and left the list`);
+      for (const w of r.warnings || []) notes.push(w);
+      toast(notes.length ? 'Saved - ' + notes.join(' · ') : 'Saved', !!(r.warnings || []).length);
       setTab('files');
       await load();
-      rescan(); // the server already started it; this just shows progress
+      if (r.rescan) rescan(); // only when folders or file types changed; the server already started it
     } catch (e) { toast(errText(e), true); }
     finally { save.disabled = false; }
   };
@@ -865,7 +870,13 @@ function setTab(name) {
 }
 
 function wire() {
-  $('#q').oninput = e => { S.q = e.target.value; recompute(); };
+  // E14 (1.7.1): the filter runs 150 ms after the last keystroke instead of
+  // on every one - on a 10,000-row library each run re-sorts and re-renders,
+  // which made typing a word stutter. Enter applies what is typed right away.
+  let qTimer = null;
+  const applyQuery = v => { clearTimeout(qTimer); qTimer = null; if (v === S.q) return; S.q = v; recompute(); };
+  $('#q').oninput = e => { clearTimeout(qTimer); qTimer = setTimeout(() => applyQuery(e.target.value), 150); };
+  $('#q').onkeydown = e => { if (e.key === 'Enter') applyQuery(e.target.value); };
   $('#incarch').onchange = e => {
     S.incArchive = e.target.checked;
     // hidden rows shouldn't stay selected behind your back
