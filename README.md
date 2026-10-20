@@ -9,10 +9,6 @@ and a round trip through Excel for bulk edits.
 It runs on your own computer and opens in your browser. No account, no cloud,
 nothing uploaded anywhere.
 
-It ships alongside [U1 Print Hub](https://github.com/dlgambill/u1hub), a
-Tier 3 award winner in Snapmaker's Innovation Fund (Phase 1, October 2026),
-and works perfectly well on its own too.
-
 ![3MF Explorer: the library as one searchable table, with the details of the model you pick](docs/screenshot.png)
 
 ## What it does
